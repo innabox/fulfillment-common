@@ -175,17 +175,23 @@ func (k *Kind) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Install cert-manager first, as other components (including trust-manager) depend on it:
+	err = k.installCertManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install cert-manager: %w", err)
+	}
+
 	// Install other components in parallel:
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	errors := &atomic.Int32{}
 	go func() {
 		defer wg.Done()
-		err := k.installCertManager(ctx)
+		err := k.installTrustManager(ctx)
 		if err != nil {
 			k.logger.ErrorContext(
 				ctx,
-				"Failed to install cert-manager",
+				"Failed to install trust-manager",
 				slog.Any("error", err),
 			)
 			errors.Add(1)
@@ -548,6 +554,33 @@ func (k *Kind) installCertManager(ctx context.Context) (err error) {
 	return nil
 }
 
+func (k *Kind) installTrustManager(ctx context.Context) (err error) {
+	k.logger.DebugContext(ctx, "Installing trust-manager")
+	installCmd, err := NewCommand().
+		SetLogger(k.logger).
+		SetName(helmCmd).
+		SetArgs(
+			"install",
+			"trust-manager",
+			"oci://quay.io/jetstack/charts/trust-manager",
+			"--version", trustManagerVersion,
+			"--kubeconfig", k.kubeconfigFile,
+			"--namespace", "cert-manager",
+			"--set", "defaultPackage.enabled=false",
+			"--wait",
+		).
+		Build()
+	if err != nil {
+		return fmt.Errorf("failed to create command to install trust-manager: %w", err)
+	}
+	err = installCmd.Execute(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install trust-manager: %w", err)
+	}
+	k.logger.DebugContext(ctx, "Installed trust-manager")
+	return nil
+}
+
 func (k *Kind) installAuthorino(ctx context.Context) (err error) {
 	// Apply the authorino manifest:
 	k.logger.DebugContext(ctx, "Applying authorino manifests")
@@ -650,6 +683,7 @@ const (
 
 // Location of manifests and charts:
 const (
-	certManagerVersion = "v1.19.1"
-	authorinoManifests = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-v0.20.0/config/deploy/manifests.yaml"
+	certManagerVersion  = "v1.19.1"
+	trustManagerVersion = "v0.20.0"
+	authorinoManifests  = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-v0.20.0/config/deploy/manifests.yaml"
 )
