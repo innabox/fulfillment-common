@@ -15,9 +15,15 @@ package testing
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +33,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
@@ -212,6 +220,12 @@ func (k *Kind) Start(ctx context.Context) error {
 	wg.Wait()
 	if errors.Load() > 0 {
 		return fmt.Errorf("failed to install some components, see the logs for details")
+	}
+
+	// Install CA:
+	err = k.installDefaultCa(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install CA certificate: %w", err)
 	}
 
 	return nil
@@ -581,6 +595,128 @@ func (k *Kind) installTrustManager(ctx context.Context) (err error) {
 	return nil
 }
 
+func (k *Kind) installDefaultCa(ctx context.Context) (err error) {
+	// Generate private key and certificate:
+	k.logger.DebugContext(ctx, "Generating CA private key and certificate")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	crt := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: defaultCaCommonName,
+		},
+		NotBefore:             now,
+		NotAfter:              now.AddDate(1, 0, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	// Create the PEM encoding of the private key and the certificate:
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	keyPem := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: keyBytes,
+	})
+	crtBytes, err := x509.CreateCertificate(rand.Reader, &crt, &crt, &key.PublicKey, key)
+	if err != nil {
+		return err
+	}
+	crtPem := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: crtBytes,
+	})
+
+	// Create the secret:
+	k.logger.DebugContext(ctx, "Creating CA secret")
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "cert-manager",
+			Name:      defaultCaSecretName,
+		},
+		Type: corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			corev1.TLSCertKey:       crtPem,
+			corev1.TLSPrivateKeyKey: keyPem,
+		},
+	}
+	err = k.kubeClient.Create(ctx, secret)
+	if err != nil {
+		return err
+	}
+
+	// Create the issuer:
+	k.logger.DebugContext(ctx, "Creating CA issuer")
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "ClusterIssuer",
+	})
+	issuer.SetName(defaultCaIssuerName)
+	issuer.Object["spec"] = map[string]any{
+		"ca": map[string]any{
+			"secretName": defaultCaSecretName,
+		},
+	}
+	err = k.kubeClient.Create(ctx, issuer)
+	if err != nil {
+		return err
+	}
+
+	// Create the bundle that will copy the CA certificate to all the namespaces:
+	k.logger.DebugContext(ctx, "Creating CA bundle")
+	bundle := &unstructured.Unstructured{}
+	bundle.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "trust.cert-manager.io",
+		Version: "v1alpha1",
+		Kind:    "Bundle",
+	})
+	bundle.SetName(defaultBundleName)
+	bundle.Object["spec"] = map[string]any{
+		"sources": []any{
+			map[string]any{
+				"secret": map[string]any{
+					"name": defaultCaSecretName,
+					"key":  corev1.TLSCertKey,
+				},
+			},
+		},
+		"target": map[string]any{
+			"configMap": map[string]any{
+				"key": defaultBundleFile,
+			},
+			"namespaceSelector": map[string]any{
+				"matchExpressions": []any{
+					map[string]any{
+						"key":      "kubernetes.io/metadata.name",
+						"operator": "NotIn",
+						"values": []string{
+							"cert-manager",
+							"kube-node-lease",
+							"kube-public",
+							"kube-system",
+							"kube-system",
+							"local-path-storage",
+						},
+					},
+				},
+			},
+		},
+	}
+	err = k.kubeClient.Create(ctx, bundle)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (k *Kind) installAuthorino(ctx context.Context) (err error) {
 	// Apply the authorino manifest:
 	k.logger.DebugContext(ctx, "Applying authorino manifests")
@@ -673,6 +809,15 @@ func (k *Kind) installCrdFiles(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Name of objects related to the default CA:
+const (
+	defaultBundleFile   = "bundle.pem"
+	defaultBundleName   = "ca-bundle"
+	defaultCaCommonName = "Default CA"
+	defaultCaIssuerName = "default-ca"
+	defaultCaSecretName = "default-ca"
+)
 
 // Names of commands:
 const (
