@@ -42,7 +42,7 @@ type GrpcClientBuilder struct {
 	serverAddress   string
 	serverPlaintext bool
 	serverInsecure  bool
-	caFiles         []string
+	caPool          *x509.CertPool
 	token           string
 	tokenFile       string
 	keepAlive       time.Duration
@@ -136,17 +136,6 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 		b.SetTokenFile(tokenFileValue)
 	}
 
-	// CA file:
-	flag = grpcClientFlagName(name, grpcClientCaFileFlagSuffix)
-	caFileValues, err := flags.GetStringArray(flag)
-	if err != nil {
-		failure()
-	} else {
-		for _, caFileValue := range caFileValues {
-			b.AddCaFile(caFileValue)
-		}
-	}
-
 	// Keep alive:
 	flag = grpcClientFlagName(name, grpcClientKeepAliveFlagSuffix)
 	keepAliveValue, err := flags.GetDuration(flag)
@@ -184,10 +173,11 @@ func (b *GrpcClientBuilder) SetServerInsecure(value bool) *GrpcClientBuilder {
 	return b
 }
 
-// AddCaFile adds a file containing CA certificates trusted by the client. This is optional, by default all the CAs
-// trusted by the system are also trusted by the client.
-func (b *GrpcClientBuilder) AddCaFile(value string) *GrpcClientBuilder {
-	b.caFiles = append(b.caFiles, value)
+// SetCaPool sets the certificate pool that contains the certificates of the certificate authorities that are trusted
+// when connecting using TLS. This is optional, and the default is to use trust the certificate authorities trusted by
+// the operating system.
+func (b *GrpcClientBuilder) SetCaPool(value *x509.CertPool) *GrpcClientBuilder {
+	b.caPool = value
 	return b
 }
 
@@ -255,6 +245,20 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		return
 	}
 
+	// Set the default CA pool:
+	caPool := b.caPool
+	if caPool == nil {
+		caPool, err = NewCertPool().
+			SetLogger(b.logger).
+			AddSystemFiles(true).
+			AddKubernertesFiles(true).
+			Build()
+		if err != nil {
+			err = fmt.Errorf("failed to build CA pool: %w", err)
+			return
+		}
+	}
+
 	// Set the TLS options:
 	var options []grpc.DialOption
 	var transportCredentials credentials.TransportCredentials
@@ -264,11 +268,6 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		tlsConfig := &tls.Config{}
 		if b.serverInsecure {
 			tlsConfig.InsecureSkipVerify = true
-		}
-		var caPool *x509.CertPool
-		caPool, err = b.loadCaFiles()
-		if err != nil {
-			return
 		}
 		tlsConfig.RootCAs = caPool
 
@@ -317,66 +316,6 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 	return
 }
 
-func (b *GrpcClientBuilder) loadCaFiles() (result *x509.CertPool, err error) {
-	caPool, err := x509.SystemCertPool()
-	if err != nil {
-		return
-	}
-	err = b.loadWellKnownCaFiles(caPool)
-	if err != nil {
-		return
-	}
-	err = b.loadConfiguredCaFiles(caPool)
-	if err != nil {
-		return
-	}
-	result = caPool
-	return
-}
-
-func (b *GrpcClientBuilder) loadWellKnownCaFiles(caPool *x509.CertPool) error {
-	for _, caFile := range grpcClientWellKnownCaFiles {
-		err := b.loadCaFile(caPool, caFile)
-		if errors.Is(err, os.ErrNotExist) {
-			b.logger.Info(
-				"Well known CA file doesn't exist",
-				slog.String("file", caFile),
-			)
-			err = nil
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (b *GrpcClientBuilder) loadConfiguredCaFiles(caPool *x509.CertPool) error {
-	for _, caFile := range b.caFiles {
-		err := b.loadCaFile(caPool, caFile)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (b *GrpcClientBuilder) loadCaFile(caPool *x509.CertPool, caFile string) error {
-	data, err := os.ReadFile(caFile)
-	if err != nil {
-		return fmt.Errorf("failed to read CA file '%s': %w", caFile, err)
-	}
-	ok := caPool.AppendCertsFromPEM(data)
-	if !ok {
-		return fmt.Errorf("file exists, but it '%s' doesn't contain any CA certificate", caFile)
-	}
-	b.logger.Info(
-		"Loaded CA file",
-		slog.String("file", caFile),
-	)
-	return nil
-}
-
 // grpcClientTokenFileSource is a token source that reads the token from a file whenever it is needed.
 type grpcClientTokenFileSource struct {
 	tokenFile string
@@ -393,15 +332,6 @@ func (s *grpcClientTokenFileSource) Token() (token *oauth2.Token, err error) {
 		AccessToken: strings.TrimSpace(string(data)),
 	}
 	return
-}
-
-// grpcClientWellKnownCaFiles is a list of well known CA files that will be automatically loaded if they exist.
-var grpcClientWellKnownCaFiles = []string{
-	// This is the CA used for Kubernets to sign the certificates of service accounts.
-	"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
-
-	// This is the CA used by OpenShift to sign the certificates generated for services.
-	"/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt",
 }
 
 // Common client names:
