@@ -33,7 +33,6 @@ import (
 //	--api-server-address string API server address. (default "localhost:8000")
 //	--api-server-plaintext      API disable TLS.
 //	--api-server-insecure       API disable TLS certificate validation.
-//	--api-ca-file               API trusted CA file.
 //	--api-token                 API token.
 //	--api-token-file            API token file.
 //	--api-keep-alive            API keep alive interval.
@@ -58,11 +57,6 @@ func AddGrpcClientFlags(flags *pflag.FlagSet, name, addr string) {
 		false,
 		fmt.Sprintf("%s disable TLS certificate validation.", name),
 	)
-	_ = flags.StringArray(
-		grpcClientFlagName(name, grpcClientCaFileFlagSuffix),
-		[]string{},
-		fmt.Sprintf("%s trusted CA file.", name),
-	)
 	_ = flags.String(
 		grpcClientFlagName(name, grpcClientTokenFlagSuffix),
 		"",
@@ -86,7 +80,6 @@ const (
 	grpcClientServerAddrFlagSuffix      = "server-address"
 	grpcClientServerPlaintextFlagSuffix = "server-plaintext"
 	grpcClientServerInsecureFlagSuffix  = "server-insecure"
-	grpcClientCaFileFlagSuffix          = "ca-file"
 	grpcClientTokenFlagSuffix           = "token"
 	grpcClientTokenFileFlagSuffix       = "token-file"
 	grpcClientKeepAliveFlagSuffix       = "keep-alive"
