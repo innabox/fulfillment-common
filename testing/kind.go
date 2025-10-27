@@ -830,5 +830,5 @@ const (
 const (
 	certManagerVersion  = "v1.19.1"
 	trustManagerVersion = "v0.20.0"
-	authorinoManifests  = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-v0.20.0/config/deploy/manifests.yaml"
+	authorinoManifests  = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-v0.22.0/config/deploy/manifests.yaml"
 )
