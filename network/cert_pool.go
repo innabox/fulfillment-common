@@ -66,8 +66,8 @@ func (b *CertPoolBuilder) AddSystemFiles(value bool) *CertPoolBuilder {
 	return b
 }
 
-// AddKubernertesFiles adds the Kubernetes CA files to the pool. The default is to add them.
-func (b *CertPoolBuilder) AddKubernertesFiles(value bool) *CertPoolBuilder {
+// AddKubernetesFiles adds the Kubernetes CA files to the pool. The default is to add them.
+func (b *CertPoolBuilder) AddKubernetesFiles(value bool) *CertPoolBuilder {
 	b.kubernetesFiles = value
 	return b
 }

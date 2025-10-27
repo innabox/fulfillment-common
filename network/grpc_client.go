@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/innabox/fulfillment-common/auth"
+	"github.com/innabox/fulfillment-common/logging"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -34,14 +35,17 @@ import (
 // GrpcClientBuilder contains the data and logic needed to create a gRPC client. Don't create instances of this object
 // directly, use the NewClient function instead.
 type GrpcClientBuilder struct {
-	logger      *slog.Logger
-	network     string
-	Address     string
-	plaintext   bool
-	insecure    bool
-	caPool      *x509.CertPool
-	tokenSource auth.TokenSource
-	keepAlive   time.Duration
+	logger             *slog.Logger
+	flags              *pflag.FlagSet
+	network            string
+	Address            string
+	plaintext          bool
+	insecure           bool
+	caPool             *x509.CertPool
+	tokenSource        auth.TokenSource
+	keepAlive          time.Duration
+	unaryInterceptors  []grpc.UnaryClientInterceptor
+	streamInterceptors []grpc.StreamClientInterceptor
 }
 
 // NewClient creates a builder that can then used to configure and create a gRPC client.
@@ -123,6 +127,9 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 		b.SetKeepAlive(keepAliveValue)
 	}
 
+	// Save the flags:
+	b.flags = flags
+
 	return b
 }
 
@@ -170,6 +177,31 @@ func (b *GrpcClientBuilder) SetTokenSource(value auth.TokenSource) *GrpcClientBu
 func (b *GrpcClientBuilder) SetKeepAlive(value time.Duration) *GrpcClientBuilder {
 	b.keepAlive = value
 	return b
+
+}
+
+// AddUnaryInterceptor adds a unary interceptor to the client.
+func (b *GrpcClientBuilder) AddUnaryInterceptor(interceptor grpc.UnaryClientInterceptor) *GrpcClientBuilder {
+	b.unaryInterceptors = append(b.unaryInterceptors, interceptor)
+	return b
+}
+
+// AddUnaryInterceptors adds multiple unary interceptors to the client.
+func (b *GrpcClientBuilder) AddUnaryInterceptors(interceptors ...grpc.UnaryClientInterceptor) *GrpcClientBuilder {
+	b.unaryInterceptors = append(b.unaryInterceptors, interceptors...)
+	return b
+}
+
+// AddStreamInterceptor adds a stream interceptor to the client.
+func (b *GrpcClientBuilder) AddStreamInterceptor(interceptor grpc.StreamClientInterceptor) *GrpcClientBuilder {
+	b.streamInterceptors = append(b.streamInterceptors, interceptor)
+	return b
+}
+
+// AddStreamInterceptors adds multiple stream interceptors to the client.
+func (b *GrpcClientBuilder) AddStreamInterceptors(interceptors ...grpc.StreamClientInterceptor) *GrpcClientBuilder {
+	b.streamInterceptors = append(b.streamInterceptors, interceptors...)
+	return b
 }
 
 // Build uses the data stored in the builder to create a new network client.
@@ -214,7 +246,7 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		caPool, err = NewCertPool().
 			SetLogger(b.logger).
 			AddSystemFiles(true).
-			AddKubernertesFiles(true).
+			AddKubernetesFiles(true).
 			Build()
 		if err != nil {
 			err = fmt.Errorf("failed to build CA pool: %w", err)
@@ -267,6 +299,30 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		options = append(options, grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time: b.keepAlive,
 		}))
+	}
+
+	// Start with th einterceptors configured by the user:
+	unaryInterceptors := b.unaryInterceptors
+	streamInterceptors := b.streamInterceptors
+
+	// Add the logging interceptor:
+	loggingInterceptor, err := logging.NewInterceptor().
+		SetLogger(b.logger).
+		SetFlags(b.flags).
+		Build()
+	if err != nil {
+		err = fmt.Errorf("failed to create logging interceptor: %w", err)
+		return
+	}
+	unaryInterceptors = append(unaryInterceptors, loggingInterceptor.UnaryClient)
+	streamInterceptors = append(streamInterceptors, loggingInterceptor.StreamClient)
+
+	// Set the interceptor options:
+	if len(b.unaryInterceptors) > 0 {
+		options = append(options, grpc.WithChainUnaryInterceptor(unaryInterceptors...))
+	}
+	if len(b.streamInterceptors) > 0 {
+		options = append(options, grpc.WithChainStreamInterceptor(streamInterceptors...))
 	}
 
 	// Create the client:

@@ -316,7 +316,7 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 		caPool, err = network.NewCertPool().
 			SetLogger(b.logger).
 			AddSystemFiles(true).
-			AddKubernertesFiles(true).
+			AddKubernetesFiles(true).
 			Build()
 		if err != nil {
 			err = fmt.Errorf("failed to build CA pool: %w", err)
