@@ -5,18 +5,23 @@ go 1.24.5
 require (
 	github.com/DataDog/gostackparse v0.7.0
 	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/google/go-querystring v1.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/onsi/ginkgo/v2 v2.25.3
 	github.com/onsi/gomega v1.38.2
+	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/spf13/pflag v1.0.10
+	go.uber.org/mock v0.6.0
+	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
 	golang.org/x/net v0.43.0
 	golang.org/x/oauth2 v0.30.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20250908214217-97024824d090
 	google.golang.org/grpc v1.75.0
 	google.golang.org/protobuf v1.36.9
+	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.1
 	sigs.k8s.io/controller-runtime v0.22.1
@@ -65,7 +70,6 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/api v0.34.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b // indirect
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397 // indirect
