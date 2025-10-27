@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -34,6 +35,7 @@ import (
 	"github.com/skratchdot/open-golang/open"
 
 	"github.com/innabox/fulfillment-common/auth"
+	"github.com/innabox/fulfillment-common/network"
 	"github.com/innabox/fulfillment-common/templating"
 )
 
@@ -61,6 +63,7 @@ type TokenSourceBuilder struct {
 	clientSecret string
 	scopes       []string
 	insecure     bool
+	caPool       *x509.CertPool
 	interactive  bool
 	timeout      time.Duration
 	httpClient   *http.Client
@@ -78,6 +81,7 @@ type TokenSource struct {
 	clientSecret     string
 	scopes           []string
 	insecure         bool
+	caPool           *x509.CertPool
 	interactive      bool
 	timeout          time.Duration
 	discoverOnce     sync.Once
@@ -197,6 +201,14 @@ func (b *TokenSourceBuilder) SetInsecure(value bool) *TokenSourceBuilder {
 	return b
 }
 
+// SetCaPool sets the certificate pool that contains the certificates of the certificate authorities that are trusted
+// when connecting using TLS. This is optional, and the default is to use trust the certificate authorities trusted by
+// the operating system.
+func (b *TokenSourceBuilder) SetCaPool(value *x509.CertPool) *TokenSourceBuilder {
+	b.caPool = value
+	return b
+}
+
 // SetInteractive sets whether interaction with the user is allowed. When set to false, the token source will not
 // initiate code or device flows, and will only use tokens from the store. This is optional and defaults to true.
 func (b *TokenSourceBuilder) SetInteractive(value bool) *TokenSourceBuilder {
@@ -298,17 +310,33 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 		timeout = 5 * time.Minute
 	}
 
+	// Set the default CA pool if needed:
+	caPool := b.caPool
+	if caPool == nil {
+		caPool, err = network.NewCertPool().
+			SetLogger(b.logger).
+			AddSystemFiles(true).
+			AddKubernertesFiles(true).
+			Build()
+		if err != nil {
+			err = fmt.Errorf("failed to build CA pool: %w", err)
+			return
+		}
+	}
+
 	// Create HTTP client with optional insecure TLS configuration:
 	httpClient := b.httpClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	tlsConfig := &tls.Config{
+		RootCAs: caPool,
+	}
 	if b.insecure {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-		}
+		tlsConfig.InsecureSkipVerify = true
+	}
+	httpClient.Transport = &http.Transport{
+		TLSClientConfig: tlsConfig,
 	}
 
 	// Set the default open function:
