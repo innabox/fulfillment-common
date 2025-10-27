@@ -106,7 +106,7 @@ func (b *DiscoveryToolBuilder) Build() (result *DiscoveryTool, err error) {
 		caPool, err = network.NewCertPool().
 			SetLogger(b.logger).
 			AddSystemFiles(true).
-			AddKubernertesFiles(true).
+			AddKubernetesFiles(true).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build CA pool: %w", err)

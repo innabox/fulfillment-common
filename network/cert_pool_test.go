@@ -252,7 +252,7 @@ var _ = Describe("Certificate pool", func() {
 			pool, err := NewCertPool().
 				SetLogger(logger).
 				AddSystemFiles(false).
-				AddKubernertesFiles(false).
+				AddKubernetesFiles(false).
 				AddFile(myCerts.caCertFile).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
@@ -275,7 +275,7 @@ var _ = Describe("Certificate pool", func() {
 			pool, err := NewCertPool().
 				SetLogger(logger).
 				AddSystemFiles(false).
-				AddKubernertesFiles(false).
+				AddKubernetesFiles(false).
 				AddFiles(myCerts.caCertFile, yourCerts.caCertFile).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
@@ -322,7 +322,7 @@ var _ = Describe("Certificate pool", func() {
 			pool, err := NewCertPool().
 				SetLogger(logger).
 				AddSystemFiles(false).
-				AddKubernertesFiles(false).
+				AddKubernetesFiles(false).
 				AddFile(certDir).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
@@ -365,7 +365,7 @@ var _ = Describe("Certificate pool", func() {
 			pool, err := NewCertPool().
 				SetLogger(logger).
 				AddSystemFiles(false).
-				AddKubernertesFiles(false).
+				AddKubernetesFiles(false).
 				AddFile(certDir).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
@@ -404,7 +404,7 @@ var _ = Describe("Certificate pool", func() {
 				SetLogger(logger).
 				SetRoot(tmpDir).
 				AddSystemFiles(false).
-				AddKubernertesFiles(true).
+				AddKubernetesFiles(true).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -437,7 +437,7 @@ var _ = Describe("Certificate pool", func() {
 				SetLogger(logger).
 				SetRoot(tmpDir).
 				AddSystemFiles(false).
-				AddKubernertesFiles(true).
+				AddKubernetesFiles(true).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
