@@ -19,17 +19,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/innabox/fulfillment-common/auth"
 	"github.com/spf13/pflag"
-	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/credentials/oauth"
 	experiementalcredentials "google.golang.org/grpc/experimental/credentials"
 	"google.golang.org/grpc/keepalive"
 )
@@ -37,15 +34,14 @@ import (
 // GrpcClientBuilder contains the data and logic needed to create a gRPC client. Don't create instances of this object
 // directly, use the NewClient function instead.
 type GrpcClientBuilder struct {
-	logger          *slog.Logger
-	serverNetwork   string
-	serverAddress   string
-	serverPlaintext bool
-	serverInsecure  bool
-	caPool          *x509.CertPool
-	token           string
-	tokenFile       string
-	keepAlive       time.Duration
+	logger      *slog.Logger
+	network     string
+	Address     string
+	plaintext   bool
+	insecure    bool
+	caPool      *x509.CertPool
+	tokenSource auth.TokenSource
+	keepAlive   time.Duration
 }
 
 // NewClient creates a builder that can then used to configure and create a gRPC client.
@@ -88,7 +84,7 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 	if err != nil {
 		failure()
 	} else {
-		b.SetServerNetwork(serverNetworkValue)
+		b.SetNetwork(serverNetworkValue)
 	}
 
 	// Server address:
@@ -97,7 +93,7 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 	if err != nil {
 		failure()
 	} else {
-		b.SetServerAddress(serverAddrValue)
+		b.SetAddress(serverAddrValue)
 	}
 
 	// Server plaintext:
@@ -106,7 +102,7 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 	if err != nil {
 		failure()
 	} else {
-		b.SetServerPlaintext(serverPlaintextValue)
+		b.SetPlaintext(serverPlaintextValue)
 	}
 
 	// Server insecure:
@@ -115,25 +111,7 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 	if err != nil {
 		failure()
 	} else {
-		b.SetServerInsecure(serverInsecureValue)
-	}
-
-	// Token:
-	flag = grpcClientFlagName(name, grpcClientTokenFlagSuffix)
-	tokenValue, err := flags.GetString(flag)
-	if err != nil {
-		failure()
-	} else {
-		b.SetToken(tokenValue)
-	}
-
-	// Token file:
-	flag = grpcClientFlagName(name, grpcClientTokenFileFlagSuffix)
-	tokenFileValue, err := flags.GetString(flag)
-	if err != nil {
-		failure()
-	} else {
-		b.SetTokenFile(tokenFileValue)
+		b.SetInsecure(serverInsecureValue)
 	}
 
 	// Keep alive:
@@ -148,28 +126,28 @@ func (b *GrpcClientBuilder) SetFlags(flags *pflag.FlagSet, name string) *GrpcCli
 	return b
 }
 
-// SetServerNetwork sets the server network.
-func (b *GrpcClientBuilder) SetServerNetwork(value string) *GrpcClientBuilder {
-	b.serverNetwork = value
+// SetNetwork sets the server network.
+func (b *GrpcClientBuilder) SetNetwork(value string) *GrpcClientBuilder {
+	b.network = value
 	return b
 }
 
-// SetServerAddress sets the server address.
-func (b *GrpcClientBuilder) SetServerAddress(value string) *GrpcClientBuilder {
-	b.serverAddress = value
+// SetAddress sets the server address.
+func (b *GrpcClientBuilder) SetAddress(value string) *GrpcClientBuilder {
+	b.Address = value
 	return b
 }
 
-// SetServerPlaintext when set to true configures the client for a server that doesn't use TLS. The default is false.
-func (b *GrpcClientBuilder) SetServerPlaintext(value bool) *GrpcClientBuilder {
-	b.serverPlaintext = value
+// SetPlaintext when set to true configures the client for a server that doesn't use TLS. The default is false.
+func (b *GrpcClientBuilder) SetPlaintext(value bool) *GrpcClientBuilder {
+	b.plaintext = value
 	return b
 }
 
-// SetServerInsecure when set to true configures the client for use TLS but to not verify the certificate presented
+// SetInsecure when set to true configures the client for use TLS but to not verify the certificate presented
 // by the server. This shouldn't be used in production environments. The default is false.
-func (b *GrpcClientBuilder) SetServerInsecure(value bool) *GrpcClientBuilder {
-	b.serverInsecure = value
+func (b *GrpcClientBuilder) SetInsecure(value bool) *GrpcClientBuilder {
+	b.insecure = value
 	return b
 }
 
@@ -181,21 +159,10 @@ func (b *GrpcClientBuilder) SetCaPool(value *x509.CertPool) *GrpcClientBuilder {
 	return b
 }
 
-// SetToken sets the token that the client will use to authenticate to the server. This is optional, by default no
-// authentication credentials are sent.
-//
-// Note that this is incompatible with SetTokenFile.
-func (b *GrpcClientBuilder) SetToken(value string) *GrpcClientBuilder {
-	b.token = value
-	return b
-}
-
-// SetTokenFile sets the path of the file containing the token that the client will use to authenticate to the server.
-// This is optional, by default no authentication credentials are sent.
-//
-// Note that this is incompatible with SetToken.
-func (b *GrpcClientBuilder) SetTokenFile(value string) *GrpcClientBuilder {
-	b.tokenFile = value
+// SetTokenSource sets the token source that the client will use to authenticate to the server. This is optional, by
+// default no authentication credentials are sent.
+func (b *GrpcClientBuilder) SetTokenSource(value auth.TokenSource) *GrpcClientBuilder {
+	b.tokenSource = value
 	return b
 }
 
@@ -212,16 +179,12 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		err = errors.New("logger is mandatory")
 		return
 	}
-	if b.serverNetwork == "" {
+	if b.network == "" {
 		err = errors.New("server network is mandatory")
 		return
 	}
-	if b.serverAddress == "" {
+	if b.Address == "" {
 		err = errors.New("server address is mandatory")
-		return
-	}
-	if b.token != "" && b.tokenFile != "" {
-		err = errors.New("token and token file are incompatible")
 		return
 	}
 	if b.keepAlive < 0 {
@@ -231,17 +194,17 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 
 	// Calculate the endpoint:
 	var endpoint string
-	switch b.serverNetwork {
+	switch b.network {
 	case "tcp":
-		endpoint = fmt.Sprintf("dns:///%s", b.serverAddress)
+		endpoint = fmt.Sprintf("dns:///%s", b.Address)
 	case "unix":
-		if filepath.IsAbs(b.serverAddress) {
-			endpoint = fmt.Sprintf("unix://%s", b.serverAddress)
+		if filepath.IsAbs(b.Address) {
+			endpoint = fmt.Sprintf("unix://%s", b.Address)
 		} else {
-			endpoint = fmt.Sprintf("unix:%s", b.serverAddress)
+			endpoint = fmt.Sprintf("unix:%s", b.Address)
 		}
 	default:
-		err = fmt.Errorf("unknown network '%s'", b.serverNetwork)
+		err = fmt.Errorf("unknown network '%s'", b.network)
 		return
 	}
 
@@ -262,11 +225,11 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 	// Set the TLS options:
 	var options []grpc.DialOption
 	var transportCredentials credentials.TransportCredentials
-	if b.serverPlaintext {
+	if b.plaintext {
 		transportCredentials = insecure.NewCredentials()
 	} else {
 		tlsConfig := &tls.Config{}
-		if b.serverInsecure {
+		if b.insecure {
 			tlsConfig.InsecureSkipVerify = true
 		}
 		tlsConfig.RootCAs = caPool
@@ -285,23 +248,18 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		options = append(options, grpc.WithTransportCredentials(transportCredentials))
 	}
 
-	// Set the authentication options:
-	haveToken := b.token != ""
-	haveTokenFile := b.tokenFile != ""
-	if haveToken || haveTokenFile {
-		var tokenSource oauth2.TokenSource
-		if haveToken {
-			tokenSource = oauth2.StaticTokenSource(&oauth2.Token{
-				AccessToken: b.token,
-			})
-		} else if haveTokenFile {
-			tokenSource = &grpcClientTokenFileSource{
-				tokenFile: b.tokenFile,
-			}
+	// Set the token options:
+	if b.tokenSource != nil {
+		var tokenCredentials credentials.PerRPCCredentials
+		tokenCredentials, err = auth.NewTokenCredentials().
+			SetLogger(b.logger).
+			SetSource(b.tokenSource).
+			Build()
+		if err != nil {
+			err = fmt.Errorf("failed to create token credentials: %w", err)
+			return
 		}
-		options = append(options, grpc.WithPerRPCCredentials(oauth.TokenSource{
-			TokenSource: tokenSource,
-		}))
+		options = append(options, grpc.WithPerRPCCredentials(tokenCredentials))
 	}
 
 	// Set the keep alive options:
@@ -313,24 +271,6 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 
 	// Create the client:
 	result, err = grpc.NewClient(endpoint, options...)
-	return
-}
-
-// grpcClientTokenFileSource is a token source that reads the token from a file whenever it is needed.
-type grpcClientTokenFileSource struct {
-	tokenFile string
-}
-
-func (s *grpcClientTokenFileSource) Token() (token *oauth2.Token, err error) {
-	var data []byte
-	data, err = os.ReadFile(s.tokenFile)
-	if err != nil {
-		err = fmt.Errorf("failed to read token from file '%s': %w", s.tokenFile, err)
-		return
-	}
-	token = &oauth2.Token{
-		AccessToken: strings.TrimSpace(string(data)),
-	}
 	return
 }
 

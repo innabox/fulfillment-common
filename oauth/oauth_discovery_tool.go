@@ -16,6 +16,7 @@ package oauth
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/innabox/fulfillment-common/network"
 )
 
 // ServerMetadata represents the OAuth 2.0 authorization server metadata structure as defined in RFC 8414.
@@ -45,6 +48,7 @@ type DiscoveryToolBuilder struct {
 	logger   *slog.Logger
 	issuer   string
 	insecure bool
+	caPool   *x509.CertPool
 }
 
 // DiscoveryTool contains the logic needed to discover OAuth endpoints from an issuer URL.
@@ -52,6 +56,7 @@ type DiscoveryTool struct {
 	logger   *slog.Logger
 	issuer   string
 	insecure bool
+	caPool   *x509.CertPool
 }
 
 // NewDiscoveryTool creates a builder that can then be used to configure and create an OAuth discovery tool.
@@ -77,8 +82,16 @@ func (b *DiscoveryToolBuilder) SetInsecure(value bool) *DiscoveryToolBuilder {
 	return b
 }
 
+// SetCaPool sets the certificate pool that contains the certificates of the certificate authorities that are trusted
+// when connecting using TLS. This is optional, and the default is to use trust the certificate authorities trusted by
+// the operating system.
+func (b *DiscoveryToolBuilder) SetCaPool(value *x509.CertPool) *DiscoveryToolBuilder {
+	b.caPool = value
+	return b
+}
+
 // Build uses the data stored in the builder to build a new OAuth discovery tool.
-func (b *DiscoveryToolBuilder) Build() (*DiscoveryTool, error) {
+func (b *DiscoveryToolBuilder) Build() (result *DiscoveryTool, err error) {
 	// Check parameters:
 	if b.logger == nil {
 		return nil, errors.New("logger is mandatory")
@@ -87,14 +100,27 @@ func (b *DiscoveryToolBuilder) Build() (*DiscoveryTool, error) {
 		return nil, errors.New("issuer is mandatory")
 	}
 
+	// Set the default CA pool if needed:
+	caPool := b.caPool
+	if caPool == nil {
+		caPool, err = network.NewCertPool().
+			SetLogger(b.logger).
+			AddSystemFiles(true).
+			AddKubernertesFiles(true).
+			Build()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build CA pool: %w", err)
+		}
+	}
+
 	// Create and populate the object:
-	result := &DiscoveryTool{
+	result = &DiscoveryTool{
 		logger:   b.logger,
 		issuer:   b.issuer,
 		insecure: b.insecure,
+		caPool:   caPool,
 	}
-
-	return result, nil
+	return
 }
 
 // Discover discovers OAuth endpoints from the configured issuer URL using the well-known configuration endpoint. This
@@ -121,12 +147,14 @@ func (t *DiscoveryTool) Discover(ctx context.Context) (result *ServerMetadata, e
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 	}
+	tlsConfig := &tls.Config{
+		RootCAs: t.caPool,
+	}
 	if t.insecure {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-		}
+		tlsConfig.InsecureSkipVerify = true
+	}
+	httpClient.Transport = &http.Transport{
+		TLSClientConfig: tlsConfig,
 	}
 
 	// Make the discovery request
