@@ -22,8 +22,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -718,6 +720,53 @@ func (k *Kind) installDefaultCa(ctx context.Context) (err error) {
 }
 
 func (k *Kind) installAuthorino(ctx context.Context) (err error) {
+	// The authorino operator doesn't currently support adding trusted CA certificates, due to a conflicting use of
+	// the '/etc/ssl/certs' directory, see here for details:
+	//
+	// https://github.com/Kuadrant/authorino-operator/pull/282
+	//
+	// Till that is fixed we need to use an alternative container image that contains the fix. So we need to
+	// download the manifests and then replace the image.
+	response, err := http.Get(authorinoManifests)
+	if err != nil {
+		return
+	}
+	defer response.Body.Close()
+	manifestsBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		return
+	}
+	manfiestsTexts := string(manifestsBytes)
+	manfiestsTexts = strings.ReplaceAll(
+		manfiestsTexts,
+		"quay.io/kuadrant/authorino-operator:"+authorinoVersion,
+		"quay.io/innabox/authorino-operator:latest",
+	)
+	manifestsDir, err := os.MkdirTemp("", "*.authorino")
+	if err != nil {
+		return
+	}
+	defer func() {
+		err := os.RemoveAll(manifestsDir)
+		if err != nil {
+			k.logger.LogAttrs(
+				ctx,
+				slog.LevelError,
+				"Failed to remove temporary manifests directory",
+				slog.String("dir", manifestsDir),
+				slog.Any("error", err),
+			)
+		}
+	}()
+	manifestsFile := filepath.Join(manifestsDir, "manifests.yaml")
+	if err != nil {
+		return
+	}
+	os.WriteFile(manifestsFile, []byte(manfiestsTexts), 0600)
+	if err != nil {
+		return
+	}
+
 	// Apply the authorino manifest:
 	k.logger.DebugContext(ctx, "Applying authorino manifests")
 	applyCmd, err := NewCommand().
@@ -726,7 +775,7 @@ func (k *Kind) installAuthorino(ctx context.Context) (err error) {
 		SetArgs(
 			"apply",
 			"--kubeconfig", k.kubeconfigFile,
-			"--filename", authorinoManifests,
+			"--filename", manifestsFile,
 		).
 		Build()
 	if err != nil {
@@ -830,5 +879,7 @@ const (
 const (
 	certManagerVersion  = "v1.19.1"
 	trustManagerVersion = "v0.20.0"
-	authorinoManifests  = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-v0.22.0/config/deploy/manifests.yaml"
+	authorinoVersion    = "v0.22.0"
+	authorinoManifests  = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-" +
+		authorinoVersion + "/config/deploy/manifests.yaml"
 )
