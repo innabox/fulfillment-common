@@ -15,8 +15,10 @@ package oauth
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2/dsl/core"
@@ -25,6 +27,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/innabox/fulfillment-common/auth"
+	"github.com/innabox/fulfillment-common/network"
+	"github.com/innabox/fulfillment-common/testing"
 )
 
 var _ = Describe("Token source", func() {
@@ -33,6 +37,7 @@ var _ = Describe("Token source", func() {
 		ctrl   *gomock.Controller
 		store  auth.TokenStore
 		server *Server
+		caPool *x509.CertPool
 	)
 
 	BeforeEach(func() {
@@ -51,10 +56,23 @@ var _ = Describe("Token source", func() {
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
-		// Create the server that responds to the discovery requests any number of times. Other responses will
+		// Create the TLS server that responds to the discovery requests any number of times. Other responses will
 		// be added in specific tests.
-		server = NewServer()
+		var caFile string
+		server, caFile = testing.MakeTCPTLSServer()
 		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		// Create CA pool with the server's certificate
+		caPool, err = network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
 		server.RouteToHandler(
 			http.MethodGet,
 			"/.well-known/oauth-authorization-server",
@@ -80,6 +98,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			SetStore(store).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
@@ -94,6 +113,7 @@ var _ = Describe("Token source", func() {
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
 			SetScopes("read", "write").
+			SetCaPool(caPool).
 			SetStore(store).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
@@ -114,12 +134,27 @@ var _ = Describe("Token source", func() {
 		Expect(source).ToNot(BeNil())
 	})
 
+	It("Can be created with CA pool for TLS", func() {
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			SetStore(store).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(source).ToNot(BeNil())
+	})
+
 	It("Can't be created without a logger", func() {
 		source, err := NewTokenSource().
 			SetIssuer(server.URL()).
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			SetStore(store).
 			Build()
 		Expect(err).To(MatchError("logger is mandatory"))
@@ -132,6 +167,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			SetStore(store).
 			Build()
 		Expect(err).To(MatchError("issuer is mandatory"))
@@ -144,6 +180,7 @@ var _ = Describe("Token source", func() {
 			SetIssuer(server.URL()).
 			SetFlow(CredentialsFlow).
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			SetStore(store).
 			Build()
 		Expect(err).To(MatchError("client identifier is mandatory"))
@@ -156,6 +193,7 @@ var _ = Describe("Token source", func() {
 			SetIssuer(server.URL()).
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
+			SetCaPool(caPool).
 			SetStore(store).
 			Build()
 		Expect(err).To(MatchError("client secret is mandatory for the client credentials flow"))
@@ -169,6 +207,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).To(MatchError("token store is mandatory"))
 		Expect(source).To(BeNil())
@@ -182,6 +221,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CodeFlow).
 			SetInteractive(true).
 			SetClientId("my_client").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).To(MatchError("listener is mandatory for the authorization code flow"))
 		Expect(source).To(BeNil())
@@ -195,6 +235,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(DeviceFlow).
 			SetInteractive(true).
 			SetClientId("my_client").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).To(MatchError("listener is mandatory for the device flow"))
 		Expect(source).To(BeNil())
@@ -217,6 +258,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -270,6 +312,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -326,6 +369,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -380,6 +424,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -436,6 +481,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -516,6 +562,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CredentialsFlow).
 			SetClientId("my_client").
 			SetClientSecret("my_secret").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -547,6 +594,7 @@ var _ = Describe("Token source", func() {
 			SetFlow(CodeFlow).
 			SetInteractive(false).
 			SetClientId("my_client").
+			SetCaPool(caPool).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 

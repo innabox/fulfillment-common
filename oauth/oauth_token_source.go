@@ -357,6 +357,7 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 		clientSecret:     b.clientSecret,
 		scopes:           scopes,
 		insecure:         b.insecure,
+		caPool:           caPool,
 		interactive:      b.interactive,
 		timeout:          timeout,
 		templatingEngine: templatingEngine,
@@ -501,6 +502,7 @@ func (s *TokenSource) discover(ctx context.Context) error {
 		SetLogger(s.logger).
 		SetIssuer(s.issuer).
 		SetInsecure(s.insecure).
+		SetCaPool(s.caPool).
 		Build()
 	if err != nil {
 		return fmt.Errorf("failed to create discovery tool: %w", err)
