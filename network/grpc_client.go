@@ -38,7 +38,7 @@ type GrpcClientBuilder struct {
 	logger             *slog.Logger
 	flags              *pflag.FlagSet
 	network            string
-	Address            string
+	address            string
 	plaintext          bool
 	insecure           bool
 	caPool             *x509.CertPool
@@ -141,7 +141,7 @@ func (b *GrpcClientBuilder) SetNetwork(value string) *GrpcClientBuilder {
 
 // SetAddress sets the server address.
 func (b *GrpcClientBuilder) SetAddress(value string) *GrpcClientBuilder {
-	b.Address = value
+	b.address = value
 	return b
 }
 
@@ -211,11 +211,7 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		err = errors.New("logger is mandatory")
 		return
 	}
-	if b.network == "" {
-		err = errors.New("server network is mandatory")
-		return
-	}
-	if b.Address == "" {
+	if b.address == "" {
 		err = errors.New("server address is mandatory")
 		return
 	}
@@ -224,16 +220,22 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		return
 	}
 
+	// Set the default network:
+	network := b.network
+	if network == "" {
+		network = "tcp"
+	}
+
 	// Calculate the endpoint:
 	var endpoint string
-	switch b.network {
+	switch network {
 	case "tcp":
-		endpoint = fmt.Sprintf("dns:///%s", b.Address)
+		endpoint = fmt.Sprintf("dns:///%s", b.address)
 	case "unix":
-		if filepath.IsAbs(b.Address) {
-			endpoint = fmt.Sprintf("unix://%s", b.Address)
+		if filepath.IsAbs(b.address) {
+			endpoint = fmt.Sprintf("unix://%s", b.address)
 		} else {
-			endpoint = fmt.Sprintf("unix:%s", b.Address)
+			endpoint = fmt.Sprintf("unix:%s", b.address)
 		}
 	default:
 		err = fmt.Errorf("unknown network '%s'", b.network)
