@@ -19,6 +19,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"embed"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -31,18 +32,20 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+//go:embed examples/*.yaml
+var examplesFS embed.FS
 
 // KindBuilder contains the data and logic needed to create an object that helps manage a Kind cluster used for
 // integration tests. Don't create instances of this type directly, use the NewKind function instead.
@@ -191,43 +194,22 @@ func (k *Kind) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to install cert-manager: %w", err)
 	}
 
-	// Install other components in parallel:
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	errors := &atomic.Int32{}
-	go func() {
-		defer wg.Done()
-		err := k.installTrustManager(ctx)
-		if err != nil {
-			k.logger.ErrorContext(
-				ctx,
-				"Failed to install trust-manager",
-				slog.Any("error", err),
-			)
-			errors.Add(1)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		err := k.installAuthorino(ctx)
-		if err != nil {
-			k.logger.ErrorContext(
-				ctx,
-				"Failed to install authorino",
-				slog.Any("error", err),
-			)
-			errors.Add(1)
-		}
-	}()
-	wg.Wait()
-	if errors.Load() > 0 {
-		return fmt.Errorf("failed to install some components, see the logs for details")
+	// Install trust-manager:
+	err = k.installTrustManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install trust-manager: %w", err)
 	}
 
 	// Install CA:
-	err = k.installDefaultCa(ctx)
+	err = k.installCa(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to install CA certificate: %w", err)
+	}
+
+	// Install authorino:
+	err = k.installAuthorino(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install authorino: %w", err)
 	}
 
 	return nil
@@ -566,6 +548,17 @@ func (k *Kind) installCertManager(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to install cert-manager: %w", err)
 	}
+
+	// Wait for custom resource definition to be available:
+	err = k.waitForCrd(ctx, "clusterissuer.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for issuer CRD: %w", err)
+	}
+	err = k.waitForCrd(ctx, "certificate.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for Certificate CRD: %w", err)
+	}
+
 	k.logger.DebugContext(ctx, "Installed cert-manager")
 	return nil
 }
@@ -593,11 +586,18 @@ func (k *Kind) installTrustManager(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to install trust-manager: %w", err)
 	}
+
+	// Wait for custom resource definition to be available:
+	err = k.waitForCrd(ctx, "bundle.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for bundle CRD: %w", err)
+	}
+
 	k.logger.DebugContext(ctx, "Installed trust-manager")
 	return nil
 }
 
-func (k *Kind) installDefaultCa(ctx context.Context) (err error) {
+func (k *Kind) installCa(ctx context.Context) (err error) {
 	// Generate private key and certificate:
 	k.logger.DebugContext(ctx, "Generating CA private key and certificate")
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -787,49 +787,15 @@ func (k *Kind) installAuthorino(ctx context.Context) (err error) {
 	}
 	k.logger.DebugContext(ctx, "Applied authorino manifests")
 
-	// Wait till it is possible to create authorino objects. Any other way to check this has proven to be
-	// unreliable. The fact that the apply worked doesn't mean that the CRDs are established already, and the fact
-	// that the CRDs are established doesn't mean that the webhooks are already running.
-	k.logger.DebugContext(ctx, "Waiting for authorino to be ready")
-	object := &unstructured.Unstructured{}
-	object.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "operator.authorino.kuadrant.io",
-		Version: "v1beta1",
-		Kind:    "Authorino",
-	})
-	object.SetNamespace("default")
-	object.SetName("default")
-	object.Object["spec"] = map[string]any{
-		"logLevel": "debug",
-		"listener": map[string]any{
-			"tls": map[string]any{
-				"enabled": false,
-			},
-		},
-		"oidcServer": map[string]any{
-			"tls": map[string]any{
-				"enabled": false,
-			},
-		},
+	// Wait for custom resource definition to be available:
+	err = k.waitForCrd(ctx, "authorino.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for authorino CRD: %w", err)
 	}
-	start := time.Now()
-	for {
-		err = k.kubeClient.Create(ctx, object, crclient.DryRunAll)
-		if err == nil {
-			break
-		}
-		k.logger.LogAttrs(
-			ctx,
-			slog.LevelDebug,
-			"Authorino not ready yet",
-			slog.Any("error", err),
-		)
-		if time.Since(start) > time.Minute {
-			return fmt.Errorf("failed to create authorino object after 1 minute: %w", err)
-		}
-		time.Sleep(5 * time.Second)
+	err = k.waitForCrd(ctx, "authconfig.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for authconfig CRD: %w", err)
 	}
-	k.logger.DebugContext(ctx, "Authorino is ready")
 
 	return nil
 }
@@ -857,6 +823,54 @@ func (k *Kind) installCrdFiles(ctx context.Context) error {
 		logger.DebugContext(ctx, "Applied CRD")
 	}
 	return nil
+}
+
+// waitForCrd waits for a custom resource definition to be available by attempting to create an example object
+// loaded from the embedded YAML file using dry run. It will retry until the CRD is available or a timeout is reached.
+func (k *Kind) waitForCrd(ctx context.Context, filename string, timeout time.Duration) error {
+	// Load the YAML file from the embedded filesystem:
+	data, err := examplesFS.ReadFile(filepath.Join("examples", filename))
+	if err != nil {
+		return fmt.Errorf("failed to read example file '%s': %w", filename, err)
+	}
+
+	// Deserialize the YAML into an unstructured object:
+	decoder := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	object := &unstructured.Unstructured{}
+	_, gvk, err := decoder.Decode(data, nil, object)
+	if err != nil {
+		return fmt.Errorf("failed to decode YAML from file '%s': %w", filename, err)
+	}
+	logger := k.logger.With(
+		slog.String("file", filename),
+		slog.String("group", gvk.Group),
+		slog.String("version", gvk.Version),
+		slog.String("kind", gvk.Kind),
+	)
+
+	// Wait for the custom resource definition to be available:
+	logger.DebugContext(ctx, "Waiting for CRD to be available")
+	start := time.Now()
+	for {
+		err := k.kubeClient.Create(ctx, object, crclient.DryRunAll)
+		if err == nil {
+			logger.DebugContext(ctx, "CRD is available")
+			return nil
+		}
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"CRD not available yet",
+			slog.Any("error", err),
+		)
+		if time.Since(start) > timeout {
+			return fmt.Errorf(
+				"CRD %s/%s/%s not available after waiting for %v: %w",
+				gvk.Group, gvk.Version, gvk.Kind, timeout, err,
+			)
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 // Name of objects related to the default CA:
