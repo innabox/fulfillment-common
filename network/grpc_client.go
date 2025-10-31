@@ -33,7 +33,7 @@ import (
 )
 
 // GrpcClientBuilder contains the data and logic needed to create a gRPC client. Don't create instances of this object
-// directly, use the NewClient function instead.
+// directly, use the NewGrpcClient function instead.
 type GrpcClientBuilder struct {
 	logger             *slog.Logger
 	flags              *pflag.FlagSet
@@ -48,8 +48,8 @@ type GrpcClientBuilder struct {
 	streamInterceptors []grpc.StreamClientInterceptor
 }
 
-// NewClient creates a builder that can then used to configure and create a gRPC client.
-func NewClient() *GrpcClientBuilder {
+// NewGrpcClient creates a builder that can then used to configure and create a gRPC client.
+func NewGrpcClient() *GrpcClientBuilder {
 	return &GrpcClientBuilder{}
 }
 
