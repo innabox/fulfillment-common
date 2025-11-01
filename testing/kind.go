@@ -315,6 +315,16 @@ func (k *Kind) ClientSet() *kubernetes.Clientset {
 	return k.kubeClientSet
 }
 
+// Exists checks whether the cluster already exists.
+func (k *Kind) Exists(ctx context.Context) (result bool, err error) {
+	names, err := k.getClusters(ctx)
+	if err != nil {
+		return
+	}
+	result = slices.Contains(names, k.name)
+	return
+}
+
 func (k *Kind) getClusters(ctx context.Context) (result []string, err error) {
 	getCmd, err := NewCommand().
 		SetLogger(k.logger).
