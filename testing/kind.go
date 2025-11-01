@@ -134,39 +134,46 @@ func (b *KindBuilder) Build() (result *Kind, err error) {
 	return
 }
 
-// Start makes sure that the cluster is created and ready to use. It will remove the cluster if it already exists and
-// will create a new one if it doesn't exist.
-func (k *Kind) Start(ctx context.Context) error {
-	// Check if the cluster already exists. If it does, delete it. Then create a new one.
+// Exists checks whether the cluster already exists.
+func (k *Kind) Exists(ctx context.Context) (result bool, err error) {
 	names, err := k.getClusters(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get existing clusters: %w", err)
+		return
 	}
-	if slices.Contains(names, k.name) {
+	result = slices.Contains(names, k.name)
+	return
+}
+
+// Start makes sure that the cluster is created and ready to use. If the cluster already exists, it will use the
+// existing one. If it doesn't exist, it will create a new one.
+func (k *Kind) Start(ctx context.Context) error {
+	// Check if the cluster already exists. If it does, use it. If not, create a new one.
+	exists, err := k.Exists(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check if cluster exists: %w", err)
+	}
+	if exists {
 		k.logger.LogAttrs(
 			ctx,
 			slog.LevelDebug,
-			"Deleting existing kind cluster",
+			"Using existing kind cluster",
 		)
-		err = k.deleteCluster(ctx)
+	} else {
+		k.logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"Creating new kind cluster",
+		)
+		err = k.createCluster(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to delete existing kind cluster '%s': %w", k.name, err)
+			return fmt.Errorf("failed to create kind cluster '%s': %w", k.name, err)
 		}
+		k.logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"Created new kind cluster",
+		)
 	}
-	k.logger.LogAttrs(
-		ctx,
-		slog.LevelDebug,
-		"Creating new kind cluster",
-	)
-	err = k.createCluster(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create kind cluster '%s': %w", k.name, err)
-	}
-	k.logger.LogAttrs(
-		ctx,
-		slog.LevelDebug,
-		"Created new kind cluster",
-	)
 
 	// Create the kubeconfig and the Kubernetes client:
 	err = k.createKubeconfig(ctx)
@@ -180,6 +187,12 @@ func (k *Kind) Start(ctx context.Context) error {
 	err = k.createKubeClientSet(ctx)
 	if err != nil {
 		return err
+	}
+
+	// If the cluster already existed then we don't need to do the rest of the setup, we will
+	// assume that it has already been done.
+	if exists {
+		return nil
 	}
 
 	// Install custom resource definitions:
@@ -313,16 +326,6 @@ func (k *Kind) Client() crclient.WithWatch {
 // ClientSet returns the Kubernetes set client for the cluster.
 func (k *Kind) ClientSet() *kubernetes.Clientset {
 	return k.kubeClientSet
-}
-
-// Exists checks whether the cluster already exists.
-func (k *Kind) Exists(ctx context.Context) (result bool, err error) {
-	names, err := k.getClusters(ctx)
-	if err != nil {
-		return
-	}
-	result = slices.Contains(names, k.name)
-	return
 }
 
 func (k *Kind) getClusters(ctx context.Context) (result []string, err error) {
