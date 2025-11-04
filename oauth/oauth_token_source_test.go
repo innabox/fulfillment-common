@@ -65,14 +65,6 @@ var _ = Describe("Token source", func() {
 			err := os.Remove(caFile)
 			Expect(err).ToNot(HaveOccurred())
 		})
-
-		// Create CA pool with the server's certificate
-		caPool, err = network.NewCertPool().
-			SetLogger(logger).
-			AddFile(caFile).
-			Build()
-		Expect(err).ToNot(HaveOccurred())
-
 		server.RouteToHandler(
 			http.MethodGet,
 			"/.well-known/oauth-authorization-server",
@@ -89,6 +81,14 @@ var _ = Describe("Token source", func() {
 				},
 			),
 		)
+
+		// Create CA pool with the server's certificate
+		caPool, err = network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
 	})
 
 	It("Can be created with all the mandatory parameters", func() {
@@ -442,7 +442,7 @@ var _ = Describe("Token source", func() {
 	})
 
 	It("Preserves the refrest token if the server doesn't return a new one", func() {
-		// Prepare the server so that it responds to the token refresh request with a valid access toke, but
+		// Prepare the server so that it responds to the token refresh request with a valid access token, but
 		// without a new refresh token:
 		server.AppendHandlers(
 			CombineHandlers(
@@ -605,5 +605,142 @@ var _ = Describe("Token source", func() {
 		// Verify that the token is the old one:
 		Expect(token).ToNot(BeNil())
 		Expect(token.Access).To(Equal("my_access_token"))
+	})
+
+	It("Doesn't perform discovery when there is already a valid token", func() {
+		// Prepare the store with a fresh token that won't expire soon:
+		err := store.Save(ctx, &auth.Token{
+			Access:  "my_fresh_access_token",
+			Refresh: "my_refresh_token",
+			Expiry:  time.Now().Add(2 * time.Hour),
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		// Replace the server with a new one that doesn't respond to discovery requests, so if discovery is
+		// attempted, it will fail with a 404.
+		server, caFile := testing.MakeTCPTLSServer()
+		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		// Create CA pool with the discovery server's certificate
+		caPool, err := network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Create the server that doesn't respond to discovery requests:
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request the token. This should use the fresh token from storage without performing discovery.
+		token, err := source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that the token is the fresh one from storage:
+		Expect(token).ToNot(BeNil())
+		Expect(token.Access).To(Equal("my_fresh_access_token"))
+		Expect(token.Refresh).To(Equal("my_refresh_token"))
+		Expect(token.Expiry).To(BeTemporally("~", time.Now().Add(2*time.Hour), time.Second))
+
+		// Verify that no requests were made to the discovery server by checking that no handlers were called:
+		Expect(server.ReceivedRequests()).To(BeEmpty())
+	})
+
+	It("Performs discovery only once across multiple token requests", func() {
+		// Replace the server with one that responds once to discovery, and then as many times as needed to
+		// the token request. This will fail if used more than once for discovery.
+		server, caFile := testing.MakeTCPTLSServer()
+		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+		caPool, err := network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		count := 0
+		server.RouteToHandler(
+			http.MethodGet,
+			"/.well-known/oauth-authorization-server",
+			func(w http.ResponseWriter, r *http.Request) {
+				Expect(count).To(BeZero())
+				RespondWithJSONEncoded(
+					http.StatusOK,
+					&ServerMetadata{
+						Issuer:        server.URL(),
+						TokenEndpoint: fmt.Sprintf("%s/token", server.URL()),
+					},
+				)(w, r)
+				count++
+			},
+		)
+		server.RouteToHandler(
+			http.MethodPost,
+			"/token",
+			RespondWithJSONEncoded(
+				http.StatusOK,
+				map[string]any{
+					"access_token": "my_first_access_token",
+					"token_type":   "Bearer",
+					"expires_in":   3600,
+				},
+			),
+		)
+
+		// Create a mock token store that returns no token the first time and an expired token the second time.
+		store := auth.NewMockTokenStore(ctrl)
+		store.EXPECT().Save(gomock.Any(), gomock.Any()).
+			Return(nil).
+			AnyTimes()
+		store.EXPECT().Load(gomock.Any()).
+			Return(nil, nil).
+			Times(1)
+		store.EXPECT().Load(gomock.Any()).
+			Return(
+				&auth.Token{
+					Access: "my_expired_token",
+					Expiry: time.Now().Add(-1 * time.Hour),
+				},
+				nil,
+			).
+			Times(1)
+
+		// Create the source:
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// First token request, should trigger discovery and request a new token:
+		_, err = source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Second token request, should use the expired token and therefore request
+		// another token, but should not trigger discovery:
+		_, err = source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that discovery was called exactly once:
+		Expect(count).To(Equal(1))
 	})
 })

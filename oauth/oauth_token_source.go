@@ -394,15 +394,6 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 
 // Token returns the a token, renewing it or requesting a new one as needed.
 func (s *TokenSource) Token(ctx context.Context) (result *auth.Token, err error) {
-	// Perform discovery on the first call:
-	s.discoverOnce.Do(func() {
-		err = s.discover(ctx)
-	})
-	if err != nil {
-		err = fmt.Errorf("failed to discover metadata: %w", err)
-		return
-	}
-
 	// Try to load an existing token first, and remember to save it if there was no error and the returned token
 	// is different to the one we initially loaded.
 	loaded, err := s.store.Load(ctx)
@@ -547,6 +538,15 @@ func (s *TokenSource) isExpired(token *auth.Token) bool {
 }
 
 func (s *TokenSource) runRefresh(ctx context.Context, refreshToken string) (result *auth.Token, err error) {
+	// Perform discovery if not already done:
+	s.discoverOnce.Do(func() {
+		err = s.discover(ctx)
+	})
+	if err != nil {
+		err = fmt.Errorf("failed to discover metadata: %w", err)
+		return
+	}
+
 	// Send the request to get the new tokens:
 	tokenResponse, err := s.sendTokenForm(ctx, tokenEndpointRequest{
 		ClientId:     s.clientId,
@@ -580,6 +580,15 @@ func (s *TokenSource) runRefresh(ctx context.Context, refreshToken string) (resu
 }
 
 func (s *TokenSource) runFlow(ctx context.Context) (result *auth.Token, err error) {
+	// Perform discovery if not already done:
+	s.discoverOnce.Do(func() {
+		err = s.discover(ctx)
+	})
+	if err != nil {
+		err = fmt.Errorf("failed to discover metadata: %w", err)
+		return
+	}
+
 	// Run the flow:
 	token, err := s.flowRunner.run(ctx)
 	if err != nil {
