@@ -328,6 +328,53 @@ func (k *Kind) ClientSet() *kubernetes.Clientset {
 	return k.kubeClientSet
 }
 
+// Dump uses 'kubectl cluster-info dump' to dump the state and logs of all namespaces to the specified directory.
+// If the directory already exists, all its contents will be removed before dumping. If it doesn't exist, it will
+// be created.
+func (k *Kind) Dump(ctx context.Context, dir string) error {
+	// Check parameters:
+	if dir == "" {
+		return fmt.Errorf("directory is mandatory")
+	}
+	logger := k.logger.With(
+		slog.String("dir", dir),
+	)
+	logger.DebugContext(ctx, "Dumping cluster state and logs")
+
+	// Remove the directory if it exists, then create it fresh:
+	err := os.RemoveAll(dir)
+	if err != nil {
+		return fmt.Errorf("failed to remove dump directory '%s': %w", dir, err)
+	}
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create dump directory '%s': %w", dir, err)
+	}
+
+	// Execute 'kubectl cluster-info' dump:
+	dumpCmd, err := NewCommand().
+		SetLogger(k.logger).
+		SetName(kubectlCmd).
+		SetArgs(
+			"cluster-info",
+			"dump",
+			"--kubeconfig", k.kubeconfigFile,
+			"--output", "yaml",
+			"--output-directory", dir,
+			"--all-namespaces",
+		).
+		Build()
+	if err != nil {
+		return fmt.Errorf("failed to create command to dump cluster state: %w", err)
+	}
+	err = dumpCmd.Execute(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to dump cluster state to directory '%s': %w", dir, err)
+	}
+	logger.DebugContext(ctx, "Dumped cluster state and logs")
+	return nil
+}
+
 func (k *Kind) getClusters(ctx context.Context) (result []string, err error) {
 	getCmd, err := NewCommand().
 		SetLogger(k.logger).
