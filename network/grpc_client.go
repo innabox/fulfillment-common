@@ -39,6 +39,7 @@ type GrpcClientBuilder struct {
 	flags              *pflag.FlagSet
 	network            string
 	address            string
+	host               string
 	plaintext          bool
 	insecure           bool
 	caPool             *x509.CertPool
@@ -143,6 +144,13 @@ func (b *GrpcClientBuilder) SetNetwork(value string) *GrpcClientBuilder {
 // SetAddress sets the server address.
 func (b *GrpcClientBuilder) SetAddress(value string) *GrpcClientBuilder {
 	b.address = value
+	return b
+}
+
+// SetHost sets the host name that the client will use for the TLS SNI extension and the HTTP Host header. This is
+// optional, if not specified the host name from the address will be used.
+func (b *GrpcClientBuilder) SetHost(value string) *GrpcClientBuilder {
+	b.host = value
 	return b
 }
 
@@ -273,6 +281,9 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		if b.insecure {
 			tlsConfig.InsecureSkipVerify = true
 		}
+		if b.host != "" {
+			tlsConfig.ServerName = b.host
+		}
 		tlsConfig.RootCAs = caPool
 
 		// TODO: This should have been the non-experimental package, but we need to use this one because
@@ -287,6 +298,11 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 	}
 	if transportCredentials != nil {
 		options = append(options, grpc.WithTransportCredentials(transportCredentials))
+	}
+
+	// Set the authority (HTTP Host header) if a host is specified:
+	if b.host != "" {
+		options = append(options, grpc.WithAuthority(b.host))
 	}
 
 	// Set the token options:

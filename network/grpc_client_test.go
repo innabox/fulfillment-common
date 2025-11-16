@@ -272,4 +272,61 @@ var _ = Describe("gRPC client", func() {
 		// Verify the user agent was captured and contains our custom value:
 		Expect(agent).To(ContainSubstring("my-agent/1.0"))
 	})
+
+	It("Sends the configured host in the authority header", func() {
+		// Create a test gRPC server with a random port:
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).ToNot(HaveOccurred())
+
+		// Create a server interceptor to capture the authority:
+		var authority string
+		serverInterceptor := func(ctx context.Context, request any, info *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler) (any, error) {
+			md, ok := metadata.FromIncomingContext(ctx)
+			if ok {
+				authorities := md.Get(":authority")
+				if len(authorities) > 0 {
+					authority = authorities[0]
+				}
+			}
+			return handler(ctx, request)
+		}
+
+		// Create and start the gRPC server with health service:
+		server := grpc.NewServer(grpc.UnaryInterceptor(serverInterceptor))
+		healthServer := health.NewServer()
+		healthpb.RegisterHealthServer(server, healthServer)
+		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		go func() {
+			defer GinkgoRecover()
+			_ = server.Serve(listener)
+		}()
+		defer server.Stop()
+
+		// Create the client with a custom host:
+		client, err := NewGrpcClient().
+			SetLogger(logger).
+			SetAddress(listener.Addr().String()).
+			SetHost("my.example.com").
+			SetPlaintext(true).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(client).ToNot(BeNil())
+		defer func() {
+			err := client.Close()
+			Expect(err).ToNot(HaveOccurred())
+		}()
+
+		// Make a request to trigger the interceptor:
+		healthClient := healthpb.NewHealthClient(client)
+		response, err := healthClient.Check(ctx, &healthpb.HealthCheckRequest{
+			Service: "",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(response).ToNot(BeNil())
+		Expect(response.Status).To(Equal(healthpb.HealthCheckResponse_SERVING))
+
+		// Verify the authority was captured and equals our custom host:
+		Expect(authority).To(Equal("my.example.com"))
+	})
 })

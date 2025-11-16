@@ -42,6 +42,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 //go:embed examples/*.yaml
@@ -243,6 +244,18 @@ func (k *Kind) Start(ctx context.Context) error {
 	err = k.installCa(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to install CA certificate: %w", err)
+	}
+
+	// Install Envoy gateway:
+	err = k.installEnvoyGateway(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install Envoy Gateway: %w", err)
+	}
+
+	// Install default gateway:
+	err = k.installDefaultGateway(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install default gateway: %w", err)
 	}
 
 	// Install authorino:
@@ -468,13 +481,8 @@ func (k *Kind) createCluster(ctx context.Context) error {
 				"role": "control-plane",
 				"extraPortMappings": []any{
 					map[string]any{
-						"containerPort": 30000,
-						"hostPort":      8000,
-						"listenAddress": "0.0.0.0",
-					},
-					map[string]any{
-						"containerPort": 30001,
-						"hostPort":      8001,
+						"containerPort": internalIngressPort,
+						"hostPort":      externalIngressPort,
 						"listenAddress": "0.0.0.0",
 					},
 				},
@@ -637,7 +645,7 @@ func (k *Kind) installCertManager(ctx context.Context) (err error) {
 			"oci://quay.io/jetstack/charts/cert-manager",
 			"--version", certManagerVersion,
 			"--kubeconfig", k.kubeconfigFile,
-			"--namespace", "cert-manager",
+			"--namespace", certManagerNamespace,
 			"--create-namespace",
 			"--set", "crds.enabled=true",
 			"--wait",
@@ -678,7 +686,7 @@ func (k *Kind) installTrustManager(ctx context.Context) (err error) {
 			"oci://quay.io/jetstack/charts/trust-manager",
 			"--version", trustManagerVersion,
 			"--kubeconfig", k.kubeconfigFile,
-			"--namespace", "cert-manager",
+			"--namespace", certManagerNamespace,
 			"--set", "defaultPackage.enabled=false",
 			"--wait",
 		).
@@ -690,13 +698,10 @@ func (k *Kind) installTrustManager(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to install trust-manager: %w", err)
 	}
-
-	// Wait for custom resource definition to be available:
 	err = k.waitForCrd(ctx, "bundle.yaml", time.Minute)
 	if err != nil {
 		return fmt.Errorf("failed to wait for bundle CRD: %w", err)
 	}
-
 	k.logger.DebugContext(ctx, "Installed trust-manager")
 	return nil
 }
@@ -739,26 +744,28 @@ func (k *Kind) installCa(ctx context.Context) (err error) {
 		Bytes: crtBytes,
 	})
 
-	// Create the secret:
-	k.logger.DebugContext(ctx, "Creating CA secret")
+	// Create or update the secret:
+	k.logger.DebugContext(ctx, "Creating or updating CA secret")
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "cert-manager",
+			Namespace: certManagerNamespace,
 			Name:      defaultCaSecretName,
 		},
-		Type: corev1.SecretTypeTLS,
-		Data: map[string][]byte{
+	}
+	_, err = controllerutil.CreateOrPatch(ctx, k.kubeClient, secret, func() error {
+		secret.Type = corev1.SecretTypeTLS
+		secret.Data = map[string][]byte{
 			corev1.TLSCertKey:       crtPem,
 			corev1.TLSPrivateKeyKey: keyPem,
-		},
-	}
-	err = k.kubeClient.Create(ctx, secret)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	// Create the issuer:
-	k.logger.DebugContext(ctx, "Creating CA issuer")
+	// Create or update the issuer:
+	k.logger.DebugContext(ctx, "Creating or updating CA issuer")
 	issuer := &unstructured.Unstructured{}
 	issuer.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "cert-manager.io",
@@ -766,18 +773,20 @@ func (k *Kind) installCa(ctx context.Context) (err error) {
 		Kind:    "ClusterIssuer",
 	})
 	issuer.SetName(defaultCaIssuerName)
-	issuer.Object["spec"] = map[string]any{
-		"ca": map[string]any{
-			"secretName": defaultCaSecretName,
-		},
-	}
-	err = k.kubeClient.Create(ctx, issuer)
+	_, err = controllerutil.CreateOrPatch(ctx, k.kubeClient, issuer, func() error {
+		issuer.Object["spec"] = map[string]any{
+			"ca": map[string]any{
+				"secretName": defaultCaSecretName,
+			},
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	// Create the bundle that will copy the CA certificate to all the namespaces:
-	k.logger.DebugContext(ctx, "Creating CA bundle")
+	// Create or update the bundle that will copy the CA certificate to all the namespaces:
+	k.logger.DebugContext(ctx, "Creating or updating CA bundle")
 	bundle := &unstructured.Unstructured{}
 	bundle.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "trust.cert-manager.io",
@@ -785,38 +794,40 @@ func (k *Kind) installCa(ctx context.Context) (err error) {
 		Kind:    "Bundle",
 	})
 	bundle.SetName(defaultBundleName)
-	bundle.Object["spec"] = map[string]any{
-		"sources": []any{
-			map[string]any{
-				"secret": map[string]any{
-					"name": defaultCaSecretName,
-					"key":  corev1.TLSCertKey,
+	_, err = controllerutil.CreateOrPatch(ctx, k.kubeClient, bundle, func() error {
+		bundle.Object["spec"] = map[string]any{
+			"sources": []any{
+				map[string]any{
+					"secret": map[string]any{
+						"name": defaultCaSecretName,
+						"key":  corev1.TLSCertKey,
+					},
 				},
 			},
-		},
-		"target": map[string]any{
-			"configMap": map[string]any{
-				"key": defaultBundleFile,
-			},
-			"namespaceSelector": map[string]any{
-				"matchExpressions": []any{
-					map[string]any{
-						"key":      "kubernetes.io/metadata.name",
-						"operator": "NotIn",
-						"values": []string{
-							"cert-manager",
-							"kube-node-lease",
-							"kube-public",
-							"kube-system",
-							"kube-system",
-							"local-path-storage",
+			"target": map[string]any{
+				"configMap": map[string]any{
+					"key": defaultBundleFile,
+				},
+				"namespaceSelector": map[string]any{
+					"matchExpressions": []any{
+						map[string]any{
+							"key":      "kubernetes.io/metadata.name",
+							"operator": "NotIn",
+							"values": []string{
+								"kube-node-lease",
+								"kube-public",
+								"kube-system",
+								"local-path-storage",
+								certManagerNamespace,
+								envoyGatewayNamespace,
+							},
 						},
 					},
 				},
 			},
-		},
-	}
-	err = k.kubeClient.Create(ctx, bundle)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
@@ -901,6 +912,153 @@ func (k *Kind) installAuthorino(ctx context.Context) (err error) {
 	err = k.waitForCrd(ctx, "authconfig.yaml", time.Minute)
 	if err != nil {
 		return fmt.Errorf("failed to wait for authconfig CRD: %w", err)
+	}
+
+	return nil
+}
+
+func (k *Kind) installEnvoyGateway(ctx context.Context) (err error) {
+	k.logger.DebugContext(ctx, "Installing Envoy Gateway")
+	installCmd, err := NewCommand().
+		SetLogger(k.logger).
+		SetName(helmCmd).
+		SetArgs(
+			"install",
+			"envoy-gateway",
+			"oci://docker.io/envoyproxy/gateway-helm",
+			"--version", envoyGatewayVersion,
+			"--kubeconfig", k.kubeconfigFile,
+			"--namespace", envoyGatewayNamespace,
+			"--create-namespace",
+			"--wait",
+		).
+		Build()
+	if err != nil {
+		return fmt.Errorf("failed to create command to install Envoy Gateway: %w", err)
+	}
+	err = installCmd.Execute(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to install Envoy Gateway: %w", err)
+	}
+	err = k.waitForCrd(ctx, "envoyproxy.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for EnvoyProxy CRD: %w", err)
+	}
+	err = k.waitForCrd(ctx, "gatewayclass.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for GatewayClass CRD: %w", err)
+	}
+	err = k.waitForCrd(ctx, "gateway.yaml", time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to wait for Gateway CRD: %w", err)
+	}
+	k.logger.DebugContext(ctx, "Installed Envoy Gateway")
+	return nil
+}
+
+func (k *Kind) installDefaultGateway(ctx context.Context) (err error) {
+	// Create or update the Envoy proxy to specify additional details of the gateway class. Note that it isn't
+	// possible to set the node port directly, but we can use a patch to set it.
+	k.logger.DebugContext(ctx, "Creating or updating Envoy proxy")
+	envoyProxyGvk := schema.GroupVersionKind{
+		Group:   "gateway.envoyproxy.io",
+		Version: "v1alpha1",
+		Kind:    "EnvoyProxy",
+	}
+	envoyProxy := &unstructured.Unstructured{}
+	envoyProxy.SetGroupVersionKind(envoyProxyGvk)
+	envoyProxy.SetNamespace(envoyGatewayNamespace)
+	envoyProxy.SetName(envoyProxyName)
+	envoyPatch := map[string]any{
+		"type": "StrategicMerge",
+		"value": map[string]any{
+			"spec": map[string]any{
+				"ports": []any{
+					map[string]any{
+						"name":     "https",
+						"port":     443,
+						"nodePort": internalIngressPort,
+					},
+				},
+			},
+		},
+	}
+	_, err = controllerutil.CreateOrPatch(ctx, k.kubeClient, envoyProxy, func() error {
+		envoyProxy.Object["spec"] = map[string]any{
+			"provider": map[string]any{
+				"type": "Kubernetes",
+				"kubernetes": map[string]any{
+					"envoyService": map[string]any{
+						"type":  "NodePort",
+						"patch": envoyPatch,
+					},
+				},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create or update Envoy proxy: %w", err)
+	}
+
+	// Create or update the default gateway class:
+	k.logger.DebugContext(ctx, "Creating or updating default gateway class")
+	gatewayClass := &unstructured.Unstructured{}
+	gatewayClass.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "GatewayClass",
+	})
+	gatewayClass.SetName(envoyGatewayClass)
+	_, err = controllerutil.CreateOrPatch(ctx, k.kubeClient, gatewayClass, func() error {
+		gatewayClass.Object["spec"] = map[string]any{
+			"controllerName": "gateway.envoyproxy.io/gatewayclass-controller",
+			"parametersRef": map[string]any{
+				"group":     envoyProxyGvk.Group,
+				"kind":      envoyProxyGvk.Kind,
+				"namespace": envoyProxy.GetNamespace(),
+				"name":      envoyProxy.GetName(),
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create or update default gateway class: %w", err)
+	}
+
+	// Create or update the default gateway:
+	k.logger.DebugContext(ctx, "Creating or updating default gateway")
+	gateway := &unstructured.Unstructured{}
+	gateway.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "Gateway",
+	})
+	gateway.SetNamespace(envoyGatewayNamespace)
+	gateway.SetName(envoyGatewayName)
+	_, err = controllerutil.CreateOrPatch(ctx, k.kubeClient, gateway, func() error {
+		gateway.Object["spec"] = map[string]any{
+			"gatewayClassName": envoyGatewayClass,
+			"listeners": []any{
+				map[string]any{
+					"name":     "tls",
+					"protocol": "TLS",
+					"port":     443,
+					"tls": map[string]any{
+						"mode": "Passthrough",
+					},
+					"allowedRoutes": map[string]any{
+						"namespaces": map[string]any{
+							"from": "All",
+						},
+					},
+				},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create or update default gateway: %w", err)
 	}
 
 	return nil
@@ -997,11 +1155,38 @@ const (
 	kubectlCmd = "kubectl"
 )
 
-// Location of manifests and charts:
+// host ingress port is the port number on the host machine that maps to the internal ingress port. Traffic arriving on
+// this port on the host will be forwarded to the internal ingress port in the cluster.
+const externalIngressPort = 8000
+
+// internalIngressPort is the port number used internally in the Kubernetes cluster for ingress traffic. This is the
+// node port that Envoy Gateway's service will use, and it is also the container port mapped in the Kind cluster
+// configuration.
+const internalIngressPort = 30000
+
+// Versions of components:
 const (
 	certManagerVersion  = "v1.19.1"
 	trustManagerVersion = "v0.20.0"
 	authorinoVersion    = "v0.22.0"
-	authorinoManifests  = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-" +
+	envoyGatewayVersion = "v1.6.1"
+)
+
+// Details of the cert-manager installation:
+const (
+	certManagerNamespace = "cert-manager"
+)
+
+// Details of the Envoy gateway installation:
+const (
+	envoyGatewayClass     = "default"
+	envoyGatewayName      = "default"
+	envoyGatewayNamespace = "envoy-gateway"
+	envoyProxyName        = "default"
+)
+
+// Details of the authorino installation:
+const (
+	authorinoManifests = "https://raw.githubusercontent.com/Kuadrant/authorino-operator/refs/heads/release-" +
 		authorinoVersion + "/config/deploy/manifests.yaml"
 )
