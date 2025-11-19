@@ -15,6 +15,7 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -75,10 +76,35 @@ func (f *deviceFlow) run(ctx context.Context) (result *auth.Token, err error) {
 		slog.String("verification_uri_complete", authResponse.VerificationUriComplete),
 	)
 
+	// If the server has provided an expiration time for the code, then we will use that. Otherwise we will use
+	// the configured timeout.
+	var expiresIn time.Duration
+	if authResponse.ExpiresIn != 0 {
+		expiresIn = f.source.secondsToDuration(authResponse.ExpiresIn)
+		f.logger.DebugContext(
+			ctx,
+			"Using timeout provided by the server",
+			slog.Duration("timeout", expiresIn),
+		)
+	} else {
+		expiresIn = f.source.timeout
+		f.logger.DebugContext(
+			ctx,
+			"Using configured timeout",
+			slog.Duration("timeout", expiresIn),
+		)
+	}
+	expiresAt := time.Now().Add(expiresIn)
+	f.logger.DebugContext(
+		ctx,
+		"Code expiration time",
+		slog.Time("expiration", expiresAt),
+	)
+
 	// Send the start event:
 	err = f.listener.Start(ctx, FlowStartEvent{
 		Flow:            DeviceFlow,
-		ExpiresIn:       f.source.secondsToDuration(authResponse.ExpiresIn),
+		ExpiresIn:       expiresIn,
 		UserCode:        authResponse.UserCode,
 		VerificationUri: authResponse.VerificationUri,
 	})
@@ -121,19 +147,30 @@ func (f *deviceFlow) run(ctx context.Context) (result *auth.Token, err error) {
 		if err == nil {
 			break
 		}
-		endpointErr, ok := err.(*endpointError)
-		if !ok {
+		if time.Now().After(expiresAt) {
+			f.logger.InfoContext(
+				ctx,
+				"Code expired, will not retry",
+				slog.Duration("expires_in", expiresIn),
+				slog.Any("error", err),
+			)
 			listenerErr := f.listener.End(ctx, FlowEndEvent{
 				Outcome: false,
 			})
 			if listenerErr != nil {
-				f.logger.ErrorContext(
-					ctx,
-					"unexpected error from token endpoint",
-					slog.Any("err", err),
-				)
+				err = listenerErr
 			}
 			return
+		}
+		var endpointErr *endpointError
+		if !errors.As(err, &endpointErr) {
+			f.logger.WarnContext(
+				ctx,
+				"Unexpected error polling token endpoint, will retry",
+				slog.Any("err", err),
+			)
+			time.Sleep(pollInterval)
+			continue
 		}
 		switch endpointErr.ErrorCode {
 		case "authorization_pending":
