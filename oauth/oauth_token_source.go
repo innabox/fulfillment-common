@@ -226,6 +226,9 @@ func (b *TokenSourceBuilder) SetStore(value auth.TokenStore) *TokenSourceBuilder
 // SetTimeout sets the maximum time to wait for a token to be obtained. This is important for the code and device
 // flows, where it isn't reasonable to wait for ever till the user completes the authorization process. This is
 // optional and the default is five minutes.
+//
+// Note that for the device flow the server will typically suggest a timeout as part of the response to the request
+// to generate the device code. In that case the timeout set here will be ignored.
 func (b *TokenSourceBuilder) SetTimeout(value time.Duration) *TokenSourceBuilder {
 	b.timeout = value
 	return b
