@@ -127,9 +127,10 @@ func (b *KindBuilder) Build() (result *Kind, err error) {
 	}
 
 	// Add the name to the logger:
-	logger := b.logger.With(
-		slog.String("kind", b.name),
-	)
+	logger := b.logger
+	if !b.quiet {
+		logger = logger.With(slog.String("name", b.name))
+	}
 
 	// Check that the command line tools that we need are available:
 	_, err = exec.LookPath(helmCmd)
