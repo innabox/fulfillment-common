@@ -35,6 +35,7 @@ type CommandBuilder struct {
 	args   []string
 	dir    string
 	home   string
+	quiet  bool
 }
 
 // Command helps manage execute a command line tool. Don't create instances of this type directly, use the NewCommand
@@ -44,11 +45,14 @@ type Command struct {
 	name   string
 	args   []string
 	dir    string
+	quiet  bool
 }
 
 // NewCommand creates a builder that can then be used to configure and create a new command.
 func NewCommand() *CommandBuilder {
-	return &CommandBuilder{}
+	return &CommandBuilder{
+		quiet: true,
+	}
 }
 
 // SetLogger sets the logger. This is mandatory.
@@ -92,6 +96,14 @@ func (b *CommandBuilder) SetHome(value string) *CommandBuilder {
 	return b
 }
 
+// SetQuiet sets whether the command output should be quiet. When quiet is true (the default), the command output is
+// buffered and only logged if the command fails. When quiet is false, each line of output is logged as it happens. This
+// is useful to avoid flooding the logs with output that is not of interest.
+func (b *CommandBuilder) SetQuiet(value bool) *CommandBuilder {
+	b.quiet = value
+	return b
+}
+
 func (b *CommandBuilder) Build() (result *Command, err error) {
 	// Check parameters:
 	if b.logger == nil {
@@ -118,14 +130,14 @@ func (b *CommandBuilder) Build() (result *Command, err error) {
 	// Add the command name:
 	attrs = append(attrs, slog.String("cmd", b.name))
 
-	// Add the directory, but replace the project shortDr directory with '~' to make it shorter and more readable:
-	var shortDr string
+	// Add the directory, but replace the project home directory with '~' to make it shorter and more readable:
+	var shortDir string
 	if b.home != "" && strings.HasPrefix(dir, b.home) {
-		shortDr = "~" + dir[len(b.home):]
+		shortDir = "~" + dir[len(b.home):]
 	} else {
-		shortDr = dir
+		shortDir = dir
 	}
-	attrs = append(attrs, slog.String("dir", shortDr))
+	attrs = append(attrs, slog.String("dir", shortDir))
 	logger := b.logger.With(attrs...)
 
 	// Create and populate the object:
@@ -134,6 +146,7 @@ func (b *CommandBuilder) Build() (result *Command, err error) {
 		name:   b.name,
 		args:   slices.Clone(b.args),
 		dir:    dir,
+		quiet:  b.quiet,
 	}
 	return
 }
@@ -143,18 +156,33 @@ func (c *Command) Execute(ctx context.Context) error {
 	logger := c.logger.With(
 		slog.Any("args", c.args),
 	)
+	outBuffer := &bytes.Buffer{}
+	errBuffer := &bytes.Buffer{}
 	cmd := exec.Command(c.name, c.args...)
 	cmd.Dir = c.dir
-	err := c.setupLogging(ctx, cmd)
-	if err != nil {
-		return err
+	cmd.Stdout = outBuffer
+	cmd.Stderr = errBuffer
+	if !c.quiet {
+		err := c.setupLogging(ctx, cmd)
+		if err != nil {
+			return err
+		}
 	}
 	logger.DebugContext(ctx, "Executing command")
-	err = cmd.Run()
-	if logger.Enabled(ctx, slog.LevelDebug) {
-		var attrs []slog.Attr
-		c.appendStateAttrs(cmd, &attrs)
-		logger.LogAttrs(ctx, slog.LevelDebug, "Executed command", attrs...)
+	err := cmd.Run()
+	var attrs []slog.Attr
+	c.appendStateAttrs(cmd, &attrs)
+	if c.quiet && err != nil {
+		outText := outBuffer.String()
+		errText := errBuffer.String()
+		attrs = append(
+			attrs,
+			slog.String("stdout", outText),
+			slog.String("stderr", errText),
+		)
+		logger.LogAttrs(ctx, slog.LevelDebug, "Command failed", attrs...)
+	} else if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(ctx, slog.LevelDebug, "Command succeeded", attrs...)
 	}
 	return err
 }
@@ -171,21 +199,27 @@ func (c *Command) Evaluate(ctx context.Context) (stdoutBytes, stderrBytes []byte
 	cmd.Dir = c.dir
 	cmd.Stdout = outBuffer
 	cmd.Stderr = errBuffer
-	err = c.setupLogging(ctx, cmd)
-	if err != nil {
-		return
+	if !c.quiet {
+		err = c.setupLogging(ctx, cmd)
+		if err != nil {
+			return
+		}
 	}
 	logger.DebugContext(ctx, "Evaluating command")
 	err = cmd.Run()
-	if logger.Enabled(ctx, slog.LevelDebug) {
-		stdoutBytes = outBuffer.Bytes()
-		stderrBytes = errBuffer.Bytes()
-		attrs := []slog.Attr{
+	stdoutBytes = outBuffer.Bytes()
+	stderrBytes = errBuffer.Bytes()
+	var attrs []slog.Attr
+	c.appendStateAttrs(cmd, &attrs)
+	if c.quiet && err != nil {
+		attrs = append(
+			attrs,
 			slog.String("stdout", string(stdoutBytes)),
 			slog.String("stderr", string(stderrBytes)),
-		}
-		c.appendStateAttrs(cmd, &attrs)
-		logger.LogAttrs(ctx, slog.LevelDebug, "Evaluated command", attrs...)
+		)
+		logger.LogAttrs(ctx, slog.LevelDebug, "Command failed", attrs...)
+	} else if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(ctx, slog.LevelDebug, "Command succeeded", attrs...)
 	}
 	return
 }
