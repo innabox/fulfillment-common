@@ -53,6 +53,7 @@ type KindBuilder struct {
 	logger   *slog.Logger
 	name     string
 	home     string
+	quiet    bool
 	crdFiles []string
 }
 
@@ -62,6 +63,7 @@ type Kind struct {
 	logger          *slog.Logger
 	name            string
 	home            string
+	quiet           bool
 	crdFiles        []string
 	kubeconfigBytes []byte
 	kubeconfigFile  string
@@ -72,7 +74,9 @@ type Kind struct {
 // NewKind creates a builder that can then be used to configure and create a new Kind cluster used for integration
 // tests.
 func NewKind() *KindBuilder {
-	return &KindBuilder{}
+	return &KindBuilder{
+		quiet: true,
+	}
 }
 
 // SetLogger sets the logger. This is mandatory.
@@ -98,6 +102,15 @@ func (b *KindBuilder) AddCrdFile(file string) *KindBuilder {
 // log messages more readable.
 func (b *KindBuilder) SetHome(value string) *KindBuilder {
 	b.home = value
+	return b
+}
+
+// SetQuiet sets whether the output of the command executed to manage the cluster should be quiet. When quiet is
+// true (the default), the command output is buffered and only logged if the command fails. When quiet is false,
+// each line of output is logged as it happens. This is useful to avoid flooding the logs with output that is not
+// of interest.
+func (b *KindBuilder) SetQuiet(value bool) *KindBuilder {
+	b.quiet = value
 	return b
 }
 
@@ -140,6 +153,7 @@ func (b *KindBuilder) Build() (result *Kind, err error) {
 		logger:   logger,
 		name:     b.name,
 		home:     b.home,
+		quiet:    b.quiet,
 		crdFiles: slices.Clone(b.crdFiles),
 	}
 	return
@@ -275,6 +289,7 @@ func (k *Kind) LoadImage(ctx context.Context, image string) error {
 		SetLogger(k.logger).
 		SetName(kindCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs("load", "docker-image", "--name", k.name, image).
 		Build()
 	if err != nil {
@@ -307,6 +322,7 @@ func (k *Kind) LoadArchive(ctx context.Context, archive string) error {
 		SetLogger(k.logger).
 		SetName(kindCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs("load", "image-archive", "--name", k.name, archive).
 		Build()
 	if err != nil {
@@ -369,6 +385,7 @@ func (k *Kind) Dump(ctx context.Context, dir string) error {
 		SetLogger(k.logger).
 		SetName(kubectlCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs(
 			"cluster-info",
 			"dump",
@@ -394,6 +411,7 @@ func (k *Kind) getClusters(ctx context.Context) (result []string, err error) {
 		SetLogger(k.logger).
 		SetName(kindCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs("get", "clusters").
 		Build()
 	if err != nil {
@@ -486,6 +504,7 @@ func (k *Kind) createCluster(ctx context.Context) error {
 		SetLogger(k.logger).
 		SetName(kindCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs("create", "cluster", "--name", k.name, "--config", configFile).
 		Build()
 	if err != nil {
@@ -505,6 +524,7 @@ func (k *Kind) deleteCluster(ctx context.Context) error {
 		SetLogger(k.logger).
 		SetName(kindCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs("delete", "cluster", "--name", k.name).
 		Build()
 	if err != nil {
@@ -524,6 +544,7 @@ func (k *Kind) createKubeconfig(ctx context.Context) error {
 		SetLogger(k.logger).
 		SetName(kindCmd).
 		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs("get", "kubeconfig", "--name", k.name).
 		Build()
 	if err != nil {
@@ -607,6 +628,8 @@ func (k *Kind) installCertManager(ctx context.Context) (err error) {
 	installCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(helmCmd).
+		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs(
 			"install",
 			"cert-manager",
@@ -646,6 +669,8 @@ func (k *Kind) installTrustManager(ctx context.Context) (err error) {
 	installCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(helmCmd).
+		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs(
 			"install",
 			"trust-manager",
@@ -850,6 +875,8 @@ func (k *Kind) installAuthorino(ctx context.Context) (err error) {
 	applyCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kubectlCmd).
+		SetHome(k.home).
+		SetQuiet(k.quiet).
 		SetArgs(
 			"apply",
 			"--kubeconfig", k.kubeconfigFile,
@@ -885,6 +912,8 @@ func (k *Kind) installCrdFiles(ctx context.Context) error {
 		applyCmd, err := NewCommand().
 			SetLogger(k.logger).
 			SetName(kubectlCmd).
+			SetHome(k.home).
+			SetQuiet(k.quiet).
 			SetArgs(
 				"apply",
 				"--kubeconfig", k.kubeconfigFile,
