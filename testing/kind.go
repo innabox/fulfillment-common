@@ -52,6 +52,7 @@ var examplesFS embed.FS
 type KindBuilder struct {
 	logger   *slog.Logger
 	name     string
+	home     string
 	crdFiles []string
 }
 
@@ -60,6 +61,7 @@ type KindBuilder struct {
 type Kind struct {
 	logger          *slog.Logger
 	name            string
+	home            string
 	crdFiles        []string
 	kubeconfigBytes []byte
 	kubeconfigFile  string
@@ -88,6 +90,14 @@ func (b *KindBuilder) SetName(name string) *KindBuilder {
 // AddCrdFile adds a file containing custom resource definition to be installed in the cluster.
 func (b *KindBuilder) AddCrdFile(file string) *KindBuilder {
 	b.crdFiles = append(b.crdFiles, file)
+	return b
+}
+
+// SetHome sets the project home directory. This is optional, and it is used to shorten the directory in log
+// messages when it is a subdirectory of the project home directory, replacing it with '~'. This is used to make
+// log messages more readable.
+func (b *KindBuilder) SetHome(value string) *KindBuilder {
+	b.home = value
 	return b
 }
 
@@ -129,6 +139,7 @@ func (b *KindBuilder) Build() (result *Kind, err error) {
 	result = &Kind{
 		logger:   logger,
 		name:     b.name,
+		home:     b.home,
 		crdFiles: slices.Clone(b.crdFiles),
 	}
 	return
@@ -263,6 +274,7 @@ func (k *Kind) LoadImage(ctx context.Context, image string) error {
 	loadCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kindCmd).
+		SetHome(k.home).
 		SetArgs("load", "docker-image", "--name", k.name, image).
 		Build()
 	if err != nil {
@@ -294,6 +306,7 @@ func (k *Kind) LoadArchive(ctx context.Context, archive string) error {
 	loadCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kindCmd).
+		SetHome(k.home).
 		SetArgs("load", "image-archive", "--name", k.name, archive).
 		Build()
 	if err != nil {
@@ -355,6 +368,7 @@ func (k *Kind) Dump(ctx context.Context, dir string) error {
 	dumpCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kubectlCmd).
+		SetHome(k.home).
 		SetArgs(
 			"cluster-info",
 			"dump",
@@ -379,6 +393,7 @@ func (k *Kind) getClusters(ctx context.Context) (result []string, err error) {
 	getCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kindCmd).
+		SetHome(k.home).
 		SetArgs("get", "clusters").
 		Build()
 	if err != nil {
@@ -470,6 +485,7 @@ func (k *Kind) createCluster(ctx context.Context) error {
 	createCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kindCmd).
+		SetHome(k.home).
 		SetArgs("create", "cluster", "--name", k.name, "--config", configFile).
 		Build()
 	if err != nil {
@@ -488,6 +504,7 @@ func (k *Kind) deleteCluster(ctx context.Context) error {
 	deleteCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kindCmd).
+		SetHome(k.home).
 		SetArgs("delete", "cluster", "--name", k.name).
 		Build()
 	if err != nil {
@@ -506,6 +523,7 @@ func (k *Kind) createKubeconfig(ctx context.Context) error {
 	getCmd, err := NewCommand().
 		SetLogger(k.logger).
 		SetName(kindCmd).
+		SetHome(k.home).
 		SetArgs("get", "kubeconfig", "--name", k.name).
 		Build()
 	if err != nil {

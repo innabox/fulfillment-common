@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 
 	"github.com/innabox/fulfillment-common/logging"
 )
@@ -33,6 +34,7 @@ type CommandBuilder struct {
 	name   string
 	args   []string
 	dir    string
+	home   string
 }
 
 // Command helps manage execute a command line tool. Don't create instances of this type directly, use the NewCommand
@@ -82,7 +84,14 @@ func (b *CommandBuilder) SetDir(value string) *CommandBuilder {
 	return b
 }
 
-// Build creates the command object.
+// SetHome sets the project home directory. This is optional, and it is used to shorten the directory in log
+// messages when it is a subdirectory of the project home directory, replacing it with '~'. This is used to make
+// log messages more readable.
+func (b *CommandBuilder) SetHome(value string) *CommandBuilder {
+	b.home = value
+	return b
+}
+
 func (b *CommandBuilder) Build() (result *Command, err error) {
 	// Check parameters:
 	if b.logger == nil {
@@ -94,7 +103,7 @@ func (b *CommandBuilder) Build() (result *Command, err error) {
 		return
 	}
 
-	// Use the current working directory if no directory is set:
+	// Use the current working directory if no directory is set
 	dir := b.dir
 	if dir == "" {
 		dir, err = os.Getwd()
@@ -103,11 +112,21 @@ func (b *CommandBuilder) Build() (result *Command, err error) {
 		}
 	}
 
-	// Add some details to the logger:
-	logger := b.logger.With(
-		slog.String("cmd", b.name),
-		slog.String("dir", dir),
-	)
+	// Prepare the attribute for the logger:
+	attrs := make([]any, 0, 2)
+
+	// Add the command name:
+	attrs = append(attrs, slog.String("cmd", b.name))
+
+	// Add the directory, but replace the project shortDr directory with '~' to make it shorter and more readable:
+	var shortDr string
+	if b.home != "" && strings.HasPrefix(dir, b.home) {
+		shortDr = "~" + dir[len(b.home):]
+	} else {
+		shortDr = dir
+	}
+	attrs = append(attrs, slog.String("dir", shortDr))
+	logger := b.logger.With(attrs...)
 
 	// Create and populate the object:
 	result = &Command{
