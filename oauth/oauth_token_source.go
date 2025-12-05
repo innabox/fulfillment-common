@@ -300,7 +300,7 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 	// Create the templating engine:
 	templatingEngine, err := templating.NewEngine().
 		SetLogger(b.logger).
-		SetFS(templatesFS).
+		AddFS(templatesFS).
 		SetDir("templates").
 		Build()
 	if err != nil {

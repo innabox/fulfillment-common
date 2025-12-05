@@ -36,7 +36,7 @@ var _ = Describe("Engine", func() {
 
 		// Create the engine:
 		engine, err := NewEngine().
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).To(HaveOccurred())
 		msg := err.Error()
@@ -45,15 +45,93 @@ var _ = Describe("Engine", func() {
 		Expect(engine).To(BeNil())
 	})
 
-	It("Can't be created without a filesystem", func() {
+	It("Can be created without a filesystem", func() {
 		engine, err := NewEngine().
 			SetLogger(logger).
 			Build()
-		Expect(err).To(HaveOccurred())
-		msg := err.Error()
-		Expect(msg).To(ContainSubstring("filesystem"))
-		Expect(msg).To(ContainSubstring("mandatory"))
-		Expect(engine).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(engine).ToNot(BeNil())
+		Expect(engine.Names()).To(BeEmpty())
+	})
+
+	It("Can add filesystem after creation", func() {
+		// Create the file system:
+		tmp, fsys := TmpFS(
+			"a.txt", "a",
+		)
+		defer os.RemoveAll(tmp)
+
+		// Create the engine without a filesystem:
+		engine, err := NewEngine().
+			SetLogger(logger).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(engine.Names()).To(BeEmpty())
+
+		// Add filesystem after creation:
+		err = engine.AddFS(fsys)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that it has loaded the file:
+		names := engine.Names()
+		Expect(names).To(ConsistOf("a.txt"))
+	})
+
+	It("Can add multiple filesystems at once", func() {
+		// Create the file systems:
+		tmp1, fsys1 := TmpFS(
+			"a.txt", "a",
+		)
+		defer os.RemoveAll(tmp1)
+
+		tmp2, fsys2 := TmpFS(
+			"b.txt", "b",
+		)
+		defer os.RemoveAll(tmp2)
+
+		// Create the engine and add multiple filesystems:
+		engine, err := NewEngine().
+			SetLogger(logger).
+			AddFS(fsys1, fsys2).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that it has loaded files from both filesystems:
+		names := engine.Names()
+		Expect(names).To(ConsistOf("a.txt", "b.txt"))
+	})
+
+	It("Can add multiple filesystems incrementally", func() {
+		// Create the file systems:
+		tmp1, fsys1 := TmpFS(
+			"a.txt", "a",
+		)
+		defer os.RemoveAll(tmp1)
+
+		tmp2, fsys2 := TmpFS(
+			"b.txt", "b",
+		)
+		defer os.RemoveAll(tmp2)
+
+		tmp3, fsys3 := TmpFS(
+			"c.txt", "c",
+		)
+		defer os.RemoveAll(tmp3)
+
+		// Create the engine with one filesystem:
+		engine, err := NewEngine().
+			SetLogger(logger).
+			AddFS(fsys1).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Add more filesystems after creation:
+		err = engine.AddFS(fsys2, fsys3)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that it has loaded files from all filesystems:
+		names := engine.Names()
+		Expect(names).To(ConsistOf("a.txt", "b.txt", "c.txt"))
 	})
 
 	It("Loads single template file", func() {
@@ -66,7 +144,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -87,7 +165,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -106,7 +184,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -130,7 +208,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -163,7 +241,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -184,7 +262,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -207,7 +285,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			Build()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -231,7 +309,7 @@ var _ = Describe("Engine", func() {
 		// Create the engine:
 		engine, err := NewEngine().
 			SetLogger(logger).
-			SetFS(fsys).
+			AddFS(fsys).
 			SetDir("mydir").
 			Build()
 		Expect(err).ToNot(HaveOccurred())
@@ -255,7 +333,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -278,7 +356,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -300,7 +378,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -322,7 +400,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -347,7 +425,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -371,7 +449,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -446,7 +524,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -475,7 +553,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -500,7 +578,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -524,7 +602,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -549,7 +627,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine with a custom function:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				AddFunction("upper", strings.ToUpper).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
@@ -571,7 +649,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine with custom functions:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				AddFunctions(tmpl.FuncMap{
 					"upper": strings.ToUpper,
 					"lower": strings.ToLower,
@@ -596,7 +674,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine with custom functions:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				AddFunction("upper", strings.ToUpper).
 				AddFunction("lower", strings.ToLower).
 				Build()
@@ -619,7 +697,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine with a custom function:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				AddFunction("repeat", strings.Repeat).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
@@ -641,7 +719,7 @@ var _ = Describe("Engine", func() {
 			// Create the engine with a custom function:
 			engine, err := NewEngine().
 				SetLogger(logger).
-				SetFS(fsys).
+				AddFS(fsys).
 				AddFunction("upper", strings.ToUpper).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
