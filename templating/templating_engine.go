@@ -34,7 +34,7 @@ import (
 // the NewEngine function instead.
 type EngineBuilder struct {
 	logger    *slog.Logger
-	fsys      fs.FS
+	fsys      []fs.FS
 	dir       string
 	functions map[string]any
 }
@@ -43,6 +43,8 @@ type EngineBuilder struct {
 // type directly, use the NewConsole function instead.
 type Engine struct {
 	logger   *slog.Logger
+	fsys     []fs.FS
+	dir      string
 	names    []string
 	template *tmpl.Template
 }
@@ -58,9 +60,10 @@ func (b *EngineBuilder) SetLogger(value *slog.Logger) *EngineBuilder {
 	return b
 }
 
-// SetFS sets the filesystem that will be used to read the templates. This is mandatory.
-func (b *EngineBuilder) SetFS(value fs.FS) *EngineBuilder {
-	b.fsys = value
+// AddFS adds one or more filesystems that will be used to read the templates. At least one filesystem must be added
+// before building the engine.
+func (b *EngineBuilder) AddFS(values ...fs.FS) *EngineBuilder {
+	b.fsys = append(b.fsys, values...)
 	return b
 }
 
@@ -99,23 +102,12 @@ func (b *EngineBuilder) Build() (result *Engine, err error) {
 		err = errors.New("logger is mandatory")
 		return
 	}
-	if b.fsys == nil {
-		err = errors.New("filesystem is mandatory")
-		return
-	}
-
-	// Calculate the root directory:
-	fsys := b.fsys
-	if b.dir != "" {
-		fsys, err = fs.Sub(b.fsys, b.dir)
-		if err != nil {
-			return
-		}
-	}
 
 	// We need to create the engine early because the some of the functions need the pointer:
 	e := &Engine{
 		logger:   b.logger,
+		fsys:     b.fsys,
+		dir:      b.dir,
 		template: tmpl.New(""),
 	}
 
@@ -133,14 +125,19 @@ func (b *EngineBuilder) Build() (result *Engine, err error) {
 		"uuid":    e.uuidFunc,
 	})
 
-	// Find and parse the template files:
-	err = e.findTemplates(fsys)
-	if err != nil {
-		return
-	}
-	err = e.parseTemplates(fsys)
-	if err != nil {
-		return
+	// Find and parse the template files from all filesystems:
+	for _, filesystem := range b.fsys {
+		var fsys fs.FS = filesystem
+		if b.dir != "" {
+			fsys, err = fs.Sub(filesystem, b.dir)
+			if err != nil {
+				return
+			}
+		}
+		err = e.loadTemplates(fsys)
+		if err != nil {
+			return
+		}
 	}
 
 	// Return the object:
@@ -148,7 +145,7 @@ func (b *EngineBuilder) Build() (result *Engine, err error) {
 	return
 }
 
-func (e *Engine) findTemplates(fsys fs.FS) error {
+func (e *Engine) loadTemplates(fsys fs.FS) error {
 	return fs.WalkDir(fsys, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -156,19 +153,13 @@ func (e *Engine) findTemplates(fsys fs.FS) error {
 		if entry.IsDir() {
 			return nil
 		}
-		e.names = append(e.names, name)
-		return nil
-	})
-}
-
-func (e *Engine) parseTemplates(fsys fs.FS) error {
-	for _, name := range e.names {
-		err := e.parseTemplate(fsys, name)
+		err = e.parseTemplate(fsys, name)
 		if err != nil {
 			return err
 		}
-	}
-	return nil
+		e.names = append(e.names, name)
+		return nil
+	})
 }
 
 func (e *Engine) parseTemplate(fsys fs.FS, name string) error {
@@ -215,6 +206,27 @@ func (e *Engine) Execute(writer io.Writer, name string, data any) error {
 // Names returns the names of the templates.
 func (e *Engine) Names() []string {
 	return slices.Clone(e.names)
+}
+
+// AddFS adds one or more filesystems to the engine and loads templates from them. This can be called after the engine
+// has been created to add additional template sources.
+func (e *Engine) AddFS(values ...fs.FS) error {
+	for _, filesystem := range values {
+		var fsys fs.FS = filesystem
+		var err error
+		if e.dir != "" {
+			fsys, err = fs.Sub(filesystem, e.dir)
+			if err != nil {
+				return err
+			}
+		}
+		err = e.loadTemplates(fsys)
+		if err != nil {
+			return err
+		}
+		e.fsys = append(e.fsys, filesystem)
+	}
+	return nil
 }
 
 // base64Func is a template function that encodes the given data using Base64 and returns the result as a string. If the
