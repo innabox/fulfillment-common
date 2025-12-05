@@ -16,6 +16,8 @@ package templating
 import (
 	"bytes"
 	"os"
+	"strings"
+	tmpl "text/template"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2/dsl/core"
@@ -533,6 +535,124 @@ var _ = Describe("Engine", func() {
 			msg := err.Error()
 			Expect(msg).To(ContainSubstring("argument 0 should be a string"))
 			Expect(msg).To(ContainSubstring("it is of type int"))
+		})
+	})
+
+	Context("Custom functions", func() {
+		It("Supports adding a single custom function", func() {
+			// Create the file system:
+			tmp, fsys := TmpFS(
+				"myfile.txt", `{{ "hello world" | upper }}`,
+			)
+			defer os.RemoveAll(tmp)
+
+			// Create the engine with a custom function:
+			engine, err := NewEngine().
+				SetLogger(logger).
+				SetFS(fsys).
+				AddFunction("upper", strings.ToUpper).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+
+			// Execute the template:
+			buffer := &bytes.Buffer{}
+			err = engine.Execute(buffer, "myfile.txt", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(buffer.String()).To(Equal("HELLO WORLD"))
+		})
+
+		It("Supports adding multiple custom functions at once", func() {
+			// Create the file system:
+			tmp, fsys := TmpFS(
+				"myfile.txt", `{{ upper "hello" }} {{ lower "WORLD" }}`,
+			)
+			defer os.RemoveAll(tmp)
+
+			// Create the engine with custom functions:
+			engine, err := NewEngine().
+				SetLogger(logger).
+				SetFS(fsys).
+				AddFunctions(tmpl.FuncMap{
+					"upper": strings.ToUpper,
+					"lower": strings.ToLower,
+				}).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+
+			// Execute the template:
+			buffer := &bytes.Buffer{}
+			err = engine.Execute(buffer, "myfile.txt", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(buffer.String()).To(Equal("HELLO world"))
+		})
+
+		It("Supports adding functions incrementally", func() {
+			// Create the file system:
+			tmp, fsys := TmpFS(
+				"myfile.txt", `{{ "hello world" | upper | lower }}`,
+			)
+			defer os.RemoveAll(tmp)
+
+			// Create the engine with custom functions:
+			engine, err := NewEngine().
+				SetLogger(logger).
+				SetFS(fsys).
+				AddFunction("upper", strings.ToUpper).
+				AddFunction("lower", strings.ToLower).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+
+			// Execute the template:
+			buffer := &bytes.Buffer{}
+			err = engine.Execute(buffer, "myfile.txt", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(buffer.String()).To(Equal("hello world"))
+		})
+
+		It("Custom functions can accept parameters", func() {
+			// Create the file system:
+			tmp, fsys := TmpFS(
+				"myfile.txt", `{{ repeat "abc" 3 }}`,
+			)
+			defer os.RemoveAll(tmp)
+
+			// Create the engine with a custom function:
+			engine, err := NewEngine().
+				SetLogger(logger).
+				SetFS(fsys).
+				AddFunction("repeat", strings.Repeat).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+
+			// Execute the template:
+			buffer := &bytes.Buffer{}
+			err = engine.Execute(buffer, "myfile.txt", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(buffer.String()).To(Equal("abcabcabc"))
+		})
+
+		It("Built-in functions are still available", func() {
+			// Create the file system:
+			tmp, fsys := TmpFS(
+				"myfile.txt", `{{ "hello" | upper }} {{ uuid | len }}`,
+			)
+			defer os.RemoveAll(tmp)
+
+			// Create the engine with a custom function:
+			engine, err := NewEngine().
+				SetLogger(logger).
+				SetFS(fsys).
+				AddFunction("upper", strings.ToUpper).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+
+			// Execute the template:
+			buffer := &bytes.Buffer{}
+			err = engine.Execute(buffer, "myfile.txt", nil)
+			Expect(err).ToNot(HaveOccurred())
+			result := buffer.String()
+			Expect(result).To(HavePrefix("HELLO "))
+			Expect(result).To(HaveSuffix(" 36"))
 		})
 	})
 })

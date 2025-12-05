@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	tmpl "text/template"
 
 	"github.com/google/uuid"
@@ -32,9 +33,10 @@ import (
 // EngineBuilder contains the data and logic needed to create templates. Don't create objects of this type directly, use
 // the NewEngine function instead.
 type EngineBuilder struct {
-	logger *slog.Logger
-	fsys   fs.FS
-	dir    string
+	logger    *slog.Logger
+	fsys      fs.FS
+	dir       string
+	functions map[string]any
 }
 
 // Engine is a template engine based on template.Template with some additional functions. Don't create objects of this
@@ -69,6 +71,27 @@ func (b *EngineBuilder) SetDir(value string) *EngineBuilder {
 	return b
 }
 
+// AddFunction adds a custom function that will be available to the templates. This is optional. The function can be
+// used in templates with the given name.
+func (b *EngineBuilder) AddFunction(name string, function any) *EngineBuilder {
+	if b.functions == nil {
+		b.functions = map[string]any{}
+	}
+	b.functions[name] = function
+	return b
+}
+
+// AddFunctions adds multiple custom functions that will be available to the templates. This is optional. The functions
+// can be used in templates with the names specified in the map keys.
+func (b *EngineBuilder) AddFunctions(functions tmpl.FuncMap) *EngineBuilder {
+	if b.functions == nil {
+		b.functions = maps.Clone(functions)
+	} else {
+		maps.Copy(b.functions, functions)
+	}
+	return b
+}
+
 // Build uses the configuration stored in the builder to create a new engine.
 func (b *EngineBuilder) Build() (result *Engine, err error) {
 	// Check parameters:
@@ -96,8 +119,13 @@ func (b *EngineBuilder) Build() (result *Engine, err error) {
 		template: tmpl.New(""),
 	}
 
-	// Register the functions:
-	e.template.Funcs(tmpl.FuncMap{
+	// Register custom functions first:
+	if b.functions != nil {
+		e.template.Funcs(b.functions)
+	}
+
+	// Register the built-in functions:
+	e.template.Funcs(map[string]any{
 		"base64":  e.base64Func,
 		"data":    e.dataFunc,
 		"execute": e.executeFunc,
