@@ -29,18 +29,14 @@ import (
 	"github.com/innabox/fulfillment-common/network"
 )
 
-// ServerMetadata represents the OAuth 2.0 authorization server metadata structure as defined in RFC 8414.
+// ServerMetadata represents the authorization server metadata structure as defined in RFC 8414 for OAuth 2.0 or in the
+// OpenID Connect Discovery 1.0 specification. Note that this only contains the fields that we need, which happen to be
+// available in both specifications.
 type ServerMetadata struct {
-	Issuer                            string   `json:"issuer,omitempty"`
-	AuthorizationEndpoint             string   `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint                     string   `json:"token_endpoint,omitempty"`
-	DeviceAuthorizationEndpoint       string   `json:"device_authorization_endpoint,omitempty"`
-	UserinfoEndpoint                  string   `json:"userinfo_endpoint,omitempty"`
-	JwksURI                           string   `json:"jwks_uri,omitempty"`
-	ScopesSupported                   []string `json:"scopes_supported,omitempty"`
-	ResponseTypesSupported            []string `json:"response_types_supported,omitempty"`
-	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
-	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	AuthorizationEndpoint       string `json:"authorization_endpoint,omitempty"`
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
+	Issuer                      string `json:"issuer,omitempty"`
+	TokenEndpoint               string `json:"token_endpoint,omitempty"`
 }
 
 // DiscoveryToolBuilder contains the logic needed to create an OAuth discovery tool.
@@ -53,10 +49,9 @@ type DiscoveryToolBuilder struct {
 
 // DiscoveryTool contains the logic needed to discover OAuth endpoints from an issuer URL.
 type DiscoveryTool struct {
-	logger   *slog.Logger
-	issuer   string
-	insecure bool
-	caPool   *x509.CertPool
+	logger     *slog.Logger
+	issuerUrl  string
+	httpClient *http.Client
 }
 
 // NewDiscoveryTool creates a builder that can then be used to configure and create an OAuth discovery tool.
@@ -100,6 +95,14 @@ func (b *DiscoveryToolBuilder) Build() (result *DiscoveryTool, err error) {
 		return nil, errors.New("issuer is mandatory")
 	}
 
+	// Clean the issuer URL:
+	issuerUrl := strings.TrimSuffix(b.issuer, "/")
+	parsed, err := url.Parse(issuerUrl)
+	if err != nil {
+		return nil, fmt.Errorf("invalid issuer URL: %w", err)
+	}
+	issuerUrl = parsed.String()
+
 	// Set the default CA pool if needed:
 	caPool := b.caPool
 	if caPool == nil {
@@ -113,49 +116,65 @@ func (b *DiscoveryToolBuilder) Build() (result *DiscoveryTool, err error) {
 		}
 	}
 
-	// Create and populate the object:
-	result = &DiscoveryTool{
-		logger:   b.logger,
-		issuer:   b.issuer,
-		insecure: b.insecure,
-		caPool:   caPool,
-	}
-	return
-}
-
-// Discover discovers OAuth endpoints from the configured issuer URL using the well-known configuration endpoint. This
-// implements the OAuth authorization server metadata specification defined in RFC 8414.
-func (t *DiscoveryTool) Discover(ctx context.Context) (result *ServerMetadata, err error) {
-	// Validate and normalize the issuer URL
-	parsedIssuer, err := url.Parse(t.issuer)
-	if err != nil {
-		t.logger.ErrorContext(
-			ctx,
-			"Invalid issuer URL",
-			slog.String("issuer", t.issuer),
-			slog.Any("error", err),
-		)
-		err = fmt.Errorf("invalid issuer URL: %w", err)
-		return
-	}
-	issuerUrl := strings.TrimSuffix(parsedIssuer.String(), "/")
-
-	// Construct the well-known configuration URL:
-	metadataUrl := fmt.Sprintf("%s/.well-known/oauth-authorization-server", issuerUrl)
-
 	// Create the HTTP client:
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 	tlsConfig := &tls.Config{
-		RootCAs: t.caPool,
+		RootCAs: caPool,
 	}
-	if t.insecure {
+	if b.insecure {
 		tlsConfig.InsecureSkipVerify = true
 	}
 	httpClient.Transport = &http.Transport{
 		TLSClientConfig: tlsConfig,
 	}
+
+	// Create and populate the object:
+	result = &DiscoveryTool{
+		logger:     b.logger,
+		issuerUrl:  issuerUrl,
+		httpClient: httpClient,
+	}
+	return
+}
+
+// Discover discovers endpoints from the configured issuer URL using the well-known configuration endpoints. This
+// implements the discovery process defined in RFC 8414 for OAuth and the OpenID Connect Discovery 1.0 specification.
+func (t *DiscoveryTool) Discover(ctx context.Context) (result *ServerMetadata, err error) {
+	result, err = t.discover(ctx, "oauth-authorization-server")
+	if err == nil {
+		t.logger.DebugContext(
+			ctx,
+			"Successfully discovered endpoints using OAuth endpoint",
+		)
+		return
+	}
+	t.logger.InfoContext(
+		ctx,
+		"Failed to discover endpoints using OAuth",
+		slog.Any("error", err),
+	)
+	result, err = t.discover(ctx, "openid-configuration")
+	if err == nil {
+		t.logger.DebugContext(
+			ctx,
+			"Successfully discovered endpoints using OIDC",
+		)
+		return
+	}
+	t.logger.InfoContext(
+		ctx,
+		"Failed to discover endpoints using OIDC",
+		slog.Any("error", err),
+	)
+	err = fmt.Errorf("failed to discover endpoints using OAuth or OIDC")
+	return
+}
+
+func (t *DiscoveryTool) discover(ctx context.Context, endpoint string) (result *ServerMetadata, err error) {
+	// Construct the well-known configuration URL:
+	metadataUrl := fmt.Sprintf("%s/.well-known/%s", t.issuerUrl, endpoint)
 
 	// Make the discovery request
 	t.logger.DebugContext(
@@ -174,7 +193,7 @@ func (t *DiscoveryTool) Discover(ctx context.Context) (result *ServerMetadata, e
 		err = fmt.Errorf("failed to create metadata request: %w", err)
 		return
 	}
-	response, err := httpClient.Do(request)
+	response, err := t.httpClient.Do(request)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
@@ -211,14 +230,16 @@ func (t *DiscoveryTool) Discover(ctx context.Context) (result *ServerMetadata, e
 			ctx,
 			"Discovery document missing required 'issuer' field",
 		)
-		return nil, fmt.Errorf("discovery document missing required 'issuer' field")
+		err = fmt.Errorf("discovery document missing required 'issuer' field")
+		return
 	}
 	if serverMetadata.TokenEndpoint == "" {
 		t.logger.ErrorContext(
 			ctx,
 			"Discovery document missing required 'token_endpoint' field",
 		)
-		return nil, fmt.Errorf("discovery document missing required 'token_endpoint' field")
+		err = fmt.Errorf("discovery document missing required 'token_endpoint' field")
+		return
 	}
 
 	// Return the result:
@@ -231,6 +252,5 @@ func (t *DiscoveryTool) Discover(ctx context.Context) (result *ServerMetadata, e
 		slog.String("device_authorization_endpoint", serverMetadata.DeviceAuthorizationEndpoint),
 	)
 	result = &serverMetadata
-
 	return
 }
