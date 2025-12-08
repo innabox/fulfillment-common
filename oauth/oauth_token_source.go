@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -69,6 +70,7 @@ type TokenSourceBuilder struct {
 	httpClient   *http.Client
 	openFunc     func(ctx context.Context, url string) error
 	pollInterval time.Duration
+	redirectUri  string
 }
 
 type TokenSource struct {
@@ -92,6 +94,7 @@ type TokenSource struct {
 	httpClient       *http.Client
 	openFunc         func(ctx context.Context, url string) error
 	pollInterval     time.Duration
+	redirectUri      string
 }
 
 // flowRunner is the interface that defines the methods that are common to all objects that can run a flow.
@@ -241,6 +244,16 @@ func (b *TokenSourceBuilder) SetPollInterval(value time.Duration) *TokenSourceBu
 	return b
 }
 
+// SetRedirectUri sets the redirect URI for the OAuth authorization code flow. This is the complete URI that will be
+// sent to the authorization endpoint, and the local HTTP server will be started to listen on the host and port
+// extracted from this URI. For example, 'http://localhost:8080' or 'http://my-host:10000/callback'. If the port is 0,
+// a random available port will be selected and the redirect URI will be updated accordingly. This is optional and
+// defaults to 'http://localhost:0', which binds to localhost with a randomly selected port.
+func (b *TokenSourceBuilder) SetRedirectUri(value string) *TokenSourceBuilder {
+	b.redirectUri = value
+	return b
+}
+
 // Build uses the data stored in the builder to build a new OAuth token source.
 func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 	// Check parameters:
@@ -350,6 +363,21 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 		}
 	}
 
+	// Validate and set the default redirect URI:
+	redirectUri := b.redirectUri
+	if redirectUri == "" {
+		redirectUri = defaultRedirectUri
+	}
+	parsedRedirectUri, err := url.Parse(redirectUri)
+	if err != nil {
+		err = fmt.Errorf("failed to parse redirect URI '%s': %w", redirectUri, err)
+		return
+	}
+	if parsedRedirectUri.Host == "" {
+		err = fmt.Errorf("redirect URI '%s' must include a host", redirectUri)
+		return
+	}
+
 	// Create the object early, as we need its reference for the underlying flow:
 	source := &TokenSource{
 		logger:           b.logger,
@@ -367,6 +395,7 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 		httpClient:       httpClient,
 		openFunc:         openFunc,
 		pollInterval:     b.pollInterval,
+		redirectUri:      redirectUri,
 	}
 
 	// Create the underlying token source based on the flow:
@@ -751,3 +780,7 @@ func (s *TokenSource) random(length int) []byte {
 func (s *TokenSource) encode(data []byte) string {
 	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(data)
 }
+
+// defaultRedirectUri is the default redirect URI to use for the authorization code flow. It binds to localhost with
+// a dynamically allocated port.
+const defaultRedirectUri = "http://localhost:0"

@@ -659,4 +659,161 @@ var _ = Describe("OAuth code flow", func() {
 		Expect(err).To(MatchError("failed to obtain token: my listener end error"))
 		Expect(token).To(BeNil())
 	})
+
+	It("Uses the default redirect URI when not explicitly set", func() {
+		// Create the source and capture the authorization URI to verify the redirect URI:
+		var authUri string
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetStore(store).
+			SetIssuer(server.URL()).
+			SetFlow(CodeFlow).
+			SetClientId("my_client").
+			SetListener(listener).
+			SetOpenFunc(func(ctx context.Context, url string) error {
+				go redirectWithError(url, "my_error", "My error")
+				authUri = url
+				return nil
+			}).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request the token:
+		_, err = source.Token(ctx)
+		Expect(err).To(HaveOccurred())
+
+		// Parse the authorization URI and verify the redirect URI uses localhost with a random port:
+		parsedAuthUri, err := url.Parse(authUri)
+		Expect(err).ToNot(HaveOccurred())
+		authQuery := parsedAuthUri.Query()
+		redirectUri := authQuery.Get("redirect_uri")
+		Expect(redirectUri).To(MatchRegexp(`^http://localhost:\d+$`))
+	})
+
+	It("Uses the custom redirect URI when explicitly set", func() {
+		// Create the source with a custom redirect URI:
+		var authUri string
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetStore(store).
+			SetIssuer(server.URL()).
+			SetFlow(CodeFlow).
+			SetClientId("my_client").
+			SetListener(listener).
+			SetRedirectUri("http://localhost:9876").
+			SetOpenFunc(func(ctx context.Context, url string) error {
+				go redirectWithError(url, "my_error", "My error")
+				authUri = url
+				return nil
+			}).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request the token:
+		_, err = source.Token(ctx)
+		Expect(err).To(HaveOccurred())
+
+		// Parse the authorization URI and verify the redirect URI uses the custom address:
+		parsedAuthUri, err := url.Parse(authUri)
+		Expect(err).ToNot(HaveOccurred())
+		authQuery := parsedAuthUri.Query()
+		redirectUri := authQuery.Get("redirect_uri")
+		Expect(redirectUri).To(Equal("http://localhost:9876"))
+	})
+
+	It("Preserves the path in the redirect URI", func() {
+		// Create the source with a redirect URI that includes a path:
+		var authUri string
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetStore(store).
+			SetIssuer(server.URL()).
+			SetFlow(CodeFlow).
+			SetClientId("my_client").
+			SetListener(listener).
+			SetRedirectUri("http://localhost:9876/callback").
+			SetOpenFunc(func(ctx context.Context, url string) error {
+				go redirectWithError(url, "my_error", "My error")
+				authUri = url
+				return nil
+			}).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request the token:
+		_, err = source.Token(ctx)
+		Expect(err).To(HaveOccurred())
+
+		// Parse the authorization URI and verify the redirect URI preserves the path:
+		parsedAuthUri, err := url.Parse(authUri)
+		Expect(err).ToNot(HaveOccurred())
+		authQuery := parsedAuthUri.Query()
+		redirectUri := authQuery.Get("redirect_uri")
+		Expect(redirectUri).To(Equal("http://localhost:9876/callback"))
+	})
+
+	It("Uses random port when redirect URI has port 0", func() {
+		// Create the source with a redirect URI that has port 0:
+		var authUri string
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetStore(store).
+			SetIssuer(server.URL()).
+			SetFlow(CodeFlow).
+			SetClientId("my_client").
+			SetListener(listener).
+			SetRedirectUri("http://localhost:0").
+			SetOpenFunc(func(ctx context.Context, url string) error {
+				go redirectWithError(url, "my_error", "My error")
+				authUri = url
+				return nil
+			}).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request the token:
+		_, err = source.Token(ctx)
+		Expect(err).To(HaveOccurred())
+
+		// Parse the authorization URI and verify the redirect URI uses localhost with a dynamically
+		// allocated port (not 0):
+		parsedAuthUri, err := url.Parse(authUri)
+		Expect(err).ToNot(HaveOccurred())
+		authQuery := parsedAuthUri.Query()
+		redirectUri := authQuery.Get("redirect_uri")
+		Expect(redirectUri).To(MatchRegexp(`^http://localhost:\d+$`))
+		Expect(redirectUri).ToNot(Equal("http://localhost:0"))
+	})
+
+	It("Preserves path when using random port", func() {
+		// Create the source with a redirect URI that has port 0 and a path:
+		var authUri string
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetStore(store).
+			SetIssuer(server.URL()).
+			SetFlow(CodeFlow).
+			SetClientId("my_client").
+			SetListener(listener).
+			SetRedirectUri("http://localhost:0/oauth/callback").
+			SetOpenFunc(func(ctx context.Context, url string) error {
+				go redirectWithError(url, "my_error", "My error")
+				authUri = url
+				return nil
+			}).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request the token:
+		_, err = source.Token(ctx)
+		Expect(err).To(HaveOccurred())
+
+		// Parse the authorization URI and verify the redirect URI preserves the path with dynamic port:
+		parsedAuthUri, err := url.Parse(authUri)
+		Expect(err).ToNot(HaveOccurred())
+		authQuery := parsedAuthUri.Query()
+		redirectUri := authQuery.Get("redirect_uri")
+		Expect(redirectUri).To(MatchRegexp(`^http://localhost:\d+/oauth/callback$`))
+		Expect(redirectUri).ToNot(ContainSubstring(":0/"))
+	})
 })
