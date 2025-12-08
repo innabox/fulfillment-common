@@ -16,7 +16,6 @@ package oauth
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	. "github.com/onsi/ginkgo/v2/dsl/core"
@@ -121,10 +120,59 @@ var _ = Describe("OAuth discovery tool", func() {
 			Expect(serverMetadata.DeviceAuthorizationEndpoint).To(Equal("https://example.com/auth/device"))
 		})
 
-		It("Returns error when discovery endpoint fails", func() {
+		It("Falls back to OIDC endpoint when OAuth endpoint returns 404", func() {
+			// OAuth endpoint returns 404:
 			server.RouteToHandler(
 				http.MethodGet,
 				"/.well-known/oauth-authorization-server",
+				RespondWith(http.StatusNotFound, ""),
+			)
+
+			// OIDC endpoint returns valid metadata:
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/openid-configuration",
+				RespondWith(
+					http.StatusOK,
+					makeMetadata(
+						"https://example.com/auth",
+						"https://example.com/auth/token",
+						"https://example.com/auth/authorize",
+						"https://example.com/auth/device",
+					),
+					http.Header{
+						"Content-Type": {
+							"application/json",
+						},
+					}),
+			)
+
+			tool, err := NewDiscoveryTool().
+				SetLogger(logger).
+				SetIssuer(server.URL()).
+				SetInsecure(true).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+
+			metadata, err := tool.Discover(ctx)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(metadata).ToNot(BeNil())
+			Expect(metadata.Issuer).To(Equal("https://example.com/auth"))
+			Expect(metadata.TokenEndpoint).To(Equal("https://example.com/auth/token"))
+			Expect(metadata.AuthorizationEndpoint).To(Equal("https://example.com/auth/authorize"))
+			Expect(metadata.DeviceAuthorizationEndpoint).To(Equal("https://example.com/auth/device"))
+		})
+
+		It("Returns error when both discovery endpoints fail", func() {
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/oauth-authorization-server",
+				RespondWith(http.StatusNotFound, ""),
+			)
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/openid-configuration",
 				RespondWith(http.StatusNotFound, ""),
 			)
 
@@ -136,10 +184,7 @@ var _ = Describe("OAuth discovery tool", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			metadata, err := tool.Discover(ctx)
-			Expect(err).To(MatchError(fmt.Sprintf(
-				"failed to fetch metadata from '%s/.well-known/oauth-authorization-server': 404 Not Found",
-				server.URL(),
-			)))
+			Expect(err).To(MatchError("failed to discover endpoints using OAuth or OIDC"))
 			Expect(metadata).To(BeNil())
 		})
 
@@ -149,48 +194,91 @@ var _ = Describe("OAuth discovery tool", func() {
 				SetIssuer("://invalid-url").
 				SetInsecure(true).
 				Build()
-			Expect(err).ToNot(HaveOccurred())
-
-			metadata, err := tool.Discover(ctx)
-
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("invalid issuer URL"))
-			Expect(metadata).To(BeNil())
+			Expect(tool).To(BeNil())
 		})
 
 		It("Returns error when discovery document is missing required fields", func() {
-			incompleteDoc := `{"issuer": "https://example.com"}`
-			makeServer(incompleteDoc, 200)
-
+			response := `{
+				"issuer": "https://example.com"
+			}`
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/oauth-authorization-server",
+				RespondWith(
+					http.StatusOK,
+					response,
+					http.Header{
+						"Content-Type": {
+							"application/json",
+						},
+					},
+				),
+			)
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/openid-configuration",
+				RespondWith(
+					http.StatusOK,
+					response,
+					http.Header{
+						"Content-Type": {
+							"application/json",
+						},
+					},
+				),
+			)
 			tool, err := NewDiscoveryTool().
 				SetLogger(logger).
 				SetIssuer(server.URL()).
 				SetInsecure(true).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
-
 			metadata, err := tool.Discover(ctx)
-
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("discovery document missing required 'token_endpoint' field"))
+			Expect(err).To(MatchError("failed to discover endpoints using OAuth or OIDC"))
 			Expect(metadata).To(BeNil())
 		})
 
 		It("Returns error when discovery document has invalid JSON", func() {
-			invalidDoc := `{"issuer": "https://example.com", "token_endpoint":`
-			makeServer(invalidDoc, 200)
-
+			response := `{
+				"issuer": "https://example.com",
+				"token_endpoint":
+			}`
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/oauth-authorization-server",
+				RespondWith(
+					http.StatusOK,
+					response,
+					http.Header{
+						"Content-Type": {
+							"application/json",
+						},
+					},
+				),
+			)
+			server.RouteToHandler(
+				http.MethodGet,
+				"/.well-known/openid-configuration",
+				RespondWith(
+					http.StatusOK,
+					response,
+					http.Header{
+						"Content-Type": {
+							"application/json",
+						},
+					},
+				),
+			)
 			tool, err := NewDiscoveryTool().
 				SetLogger(logger).
 				SetIssuer(server.URL()).
 				SetInsecure(true).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
-
 			metadata, err := tool.Discover(ctx)
-
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("failed to parse metadata"))
+			Expect(err).To(MatchError("failed to discover endpoints using OAuth or OIDC"))
 			Expect(metadata).To(BeNil())
 		})
 	})
