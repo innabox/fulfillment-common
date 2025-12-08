@@ -20,9 +20,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/google/go-querystring/query"
+
 	"github.com/innabox/fulfillment-common/auth"
 	"github.com/innabox/fulfillment-common/network"
 )
@@ -67,7 +69,7 @@ func (f *codeFlow) run(ctx context.Context) (result *auth.Token, err error) {
 	// Start the local HTTP server to handle the redirect:
 	f.codeChan = make(chan string)
 	f.errorChan = make(chan error)
-	server, err := f.startServer(ctx)
+	server, redirectUri, err := f.startServer(ctx)
 	if err != nil {
 		f.logger.ErrorContext(
 			ctx,
@@ -86,9 +88,6 @@ func (f *codeFlow) run(ctx context.Context) (result *auth.Token, err error) {
 			)
 		}
 	}()
-
-	// Calculate the redirect URI:
-	redirectUri := fmt.Sprintf("http://%s", server.Addr)
 
 	// Calculate the authorization URL and open it in the browser:
 	authRequest := authEndpointRequest{
@@ -226,10 +225,14 @@ func (f *codeFlow) run(ctx context.Context) (result *auth.Token, err error) {
 	return
 }
 
-func (f *codeFlow) startServer(ctx context.Context) (result *http.Server, err error) {
-	// Calculate the listener address. Currently this is hardcoded but in the future we may want to make it
-	// configurable.
-	address := "localhost:0"
+func (f *codeFlow) startServer(ctx context.Context) (server *http.Server, redirectUri string, err error) {
+	// Parse the redirect URI to extract the host and port for the listener:
+	parsedUri, err := url.Parse(f.source.redirectUri)
+	if err != nil {
+		err = fmt.Errorf("failed to parse redirect URI '%s': %w", f.source.redirectUri, err)
+		return
+	}
+	address := parsedUri.Host
 
 	// Create the listener:
 	listener, err := network.NewListener().
@@ -242,23 +245,30 @@ func (f *codeFlow) startServer(ctx context.Context) (result *http.Server, err er
 		return
 	}
 
-	// We already know the host name, but the port number will be allocated dynamically if it was initially zero,
-	// so we need to get it from the listener.
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return
+	// The port number may have been allocated dynamically if it was initially zero, so we need to get the actual
+	// address from the listener and rebuild the redirect URI if needed.
+	actualAddress := listener.Addr().String()
+	if address != actualAddress {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			host = address
+		}
+		_, actualPort, _ := net.SplitHostPort(actualAddress)
+		actualAddress = net.JoinHostPort(host, actualPort)
+		parsedUri.Host = actualAddress
+		redirectUri = parsedUri.String()
+	} else {
+		redirectUri = f.source.redirectUri
 	}
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	address = net.JoinHostPort(host, port)
 	logger := f.logger.With(
-		slog.String("address", address),
+		slog.String("address", actualAddress),
 	)
 	logger.DebugContext(ctx, "Created redirect listener")
 
 	// Create and start the server:
-	server := &http.Server{
+	server = &http.Server{
 		Handler: http.HandlerFunc(f.serve),
-		Addr:    address,
+		Addr:    actualAddress,
 	}
 	go func() {
 		err := server.Serve(listener)
@@ -273,8 +283,6 @@ func (f *codeFlow) startServer(ctx context.Context) (result *http.Server, err er
 	}()
 	logger.DebugContext(ctx, "Started redirect server")
 
-	// Return the address:
-	result = server
 	return
 }
 
