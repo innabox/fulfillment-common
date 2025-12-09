@@ -743,4 +743,268 @@ var _ = Describe("Token source", func() {
 		// Verify that discovery was called exactly once:
 		Expect(count).To(Equal(1))
 	})
+
+	It("Uses all default scopes when server supports them all", func() {
+		// Create a server that supports all default scopes:
+		server, caFile := testing.MakeTCPTLSServer()
+		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+		caPool, err := network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		server.RouteToHandler(
+			http.MethodGet,
+			"/.well-known/oauth-authorization-server",
+			RespondWithJSONEncoded(
+				http.StatusOK,
+				&ServerMetadata{
+					Issuer:          server.URL(),
+					TokenEndpoint:   fmt.Sprintf("%s/token", server.URL()),
+					ScopesSupported: []string{"openid", "profile", "email", "other"},
+				},
+			),
+		)
+
+		// Capture the scopes sent to the token endpoint:
+		var requestedScopes string
+		server.RouteToHandler(
+			http.MethodPost,
+			"/token",
+			func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				Expect(err).ToNot(HaveOccurred())
+				requestedScopes = r.FormValue("scope")
+				RespondWithJSONEncoded(
+					http.StatusOK,
+					map[string]any{
+						"access_token": "my_access_token",
+						"token_type":   "Bearer",
+						"expires_in":   3600,
+					},
+				)(w, r)
+			},
+		)
+
+		// Create the source without setting scopes:
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request a token:
+		_, err = source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that all default scopes were requested:
+		Expect(requestedScopes).To(Equal("email openid profile"))
+	})
+
+	It("Uses only the scopes supported by the server from defaults", func() {
+		// Create a server that supports only some of the default scopes:
+		server, caFile := testing.MakeTCPTLSServer()
+		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+		caPool, err := network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		server.RouteToHandler(
+			http.MethodGet,
+			"/.well-known/oauth-authorization-server",
+			RespondWithJSONEncoded(
+				http.StatusOK,
+				&ServerMetadata{
+					Issuer:          server.URL(),
+					TokenEndpoint:   fmt.Sprintf("%s/token", server.URL()),
+					ScopesSupported: []string{"openid", "other"},
+				},
+			),
+		)
+
+		// Capture the scopes sent to the token endpoint:
+		var requestedScopes string
+		server.RouteToHandler(
+			http.MethodPost,
+			"/token",
+			func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				Expect(err).ToNot(HaveOccurred())
+				requestedScopes = r.FormValue("scope")
+				RespondWithJSONEncoded(
+					http.StatusOK,
+					map[string]any{
+						"access_token": "my_access_token",
+						"token_type":   "Bearer",
+						"expires_in":   3600,
+					},
+				)(w, r)
+			},
+		)
+
+		// Create the source without setting scopes:
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request a token:
+		_, err = source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that only the supported scopes were requested:
+		Expect(requestedScopes).To(Equal("openid"))
+	})
+
+	It("Uses explicitly configured scopes instead of defaults", func() {
+		// Create a server that supports all default scopes:
+		server, caFile := testing.MakeTCPTLSServer()
+		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+		caPool, err := network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		server.RouteToHandler(
+			http.MethodGet,
+			"/.well-known/oauth-authorization-server",
+			RespondWithJSONEncoded(
+				http.StatusOK,
+				&ServerMetadata{
+					Issuer:          server.URL(),
+					TokenEndpoint:   fmt.Sprintf("%s/token", server.URL()),
+					ScopesSupported: []string{"openid", "profile", "email", "custom"},
+				},
+			),
+		)
+
+		// Capture the scopes sent to the token endpoint:
+		var requestedScopes string
+		server.RouteToHandler(
+			http.MethodPost,
+			"/token",
+			func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				Expect(err).ToNot(HaveOccurred())
+				requestedScopes = r.FormValue("scope")
+				RespondWithJSONEncoded(
+					http.StatusOK,
+					map[string]any{
+						"access_token": "my_access_token",
+						"token_type":   "Bearer",
+						"expires_in":   3600,
+					},
+				)(w, r)
+			},
+		)
+
+		// Create the source with explicit scopes:
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetScopes("custom", "openid").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request a token:
+		_, err = source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that the explicitly configured scopes were used:
+		Expect(requestedScopes).To(Equal("custom openid"))
+	})
+
+	It("Doesn't set default scopes when server doesn't advertise supported scopes", func() {
+		// Create a server that doesn't return supported scopes:
+		server, caFile := testing.MakeTCPTLSServer()
+		DeferCleanup(server.Close)
+		DeferCleanup(func() {
+			err := os.Remove(caFile)
+			Expect(err).ToNot(HaveOccurred())
+		})
+		caPool, err := network.NewCertPool().
+			SetLogger(logger).
+			AddFile(caFile).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		server.RouteToHandler(
+			http.MethodGet,
+			"/.well-known/oauth-authorization-server",
+			RespondWithJSONEncoded(
+				http.StatusOK,
+				&ServerMetadata{
+					Issuer:        server.URL(),
+					TokenEndpoint: fmt.Sprintf("%s/token", server.URL()),
+				},
+			),
+		)
+
+		// Capture the scopes sent to the token endpoint:
+		var requestedScopes string
+		server.RouteToHandler(
+			http.MethodPost,
+			"/token",
+			func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				Expect(err).ToNot(HaveOccurred())
+				requestedScopes = r.FormValue("scope")
+				RespondWithJSONEncoded(
+					http.StatusOK,
+					map[string]any{
+						"access_token": "my_access_token",
+						"token_type":   "Bearer",
+						"expires_in":   3600,
+					},
+				)(w, r)
+			},
+		)
+
+		// Create the source without setting scopes:
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(server.URL()).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		// Request a token:
+		_, err = source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that no scopes were requested:
+		Expect(requestedScopes).To(BeEmpty())
+	})
 })

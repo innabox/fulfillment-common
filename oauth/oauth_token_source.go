@@ -545,7 +545,6 @@ func (s *TokenSource) discover(ctx context.Context) error {
 	if metadata.DeviceAuthorizationEndpoint != "" {
 		s.deviceEndpoint = metadata.DeviceAuthorizationEndpoint
 	}
-
 	s.logger.DebugContext(
 		ctx,
 		"Successfully discovered metadata",
@@ -553,6 +552,23 @@ func (s *TokenSource) discover(ctx context.Context) error {
 		slog.String("auth_url", s.authEndpoint),
 		slog.String("device_url", s.deviceEndpoint),
 	)
+
+	// If no scopes were explicitly configured, set the default scopes based on what the server supports:
+	if len(s.scopes) == 0 && len(metadata.ScopesSupported) > 0 {
+		for _, scope := range defaultScopes {
+			if slices.Contains(metadata.ScopesSupported, scope) {
+				s.scopes = append(s.scopes, scope)
+			}
+		}
+		slices.Sort(s.scopes)
+		s.logger.DebugContext(
+			ctx,
+			"Using default scopes based on server support",
+			slog.Any("supported", metadata.ScopesSupported),
+			slog.Any("default", defaultScopes),
+			slog.Any("selected", s.scopes),
+		)
+	}
 
 	return nil
 }
@@ -784,3 +800,11 @@ func (s *TokenSource) encode(data []byte) string {
 // defaultRedirectUri is the default redirect URI to use for the authorization code flow. It binds to localhost with
 // a dynamically allocated port.
 const defaultRedirectUri = "http://localhost:0"
+
+// defaultScopes is the list of scopes that will be requested by default if the server supports them and the user
+// doesn't explicitly set scopes.
+var defaultScopes = []string{
+	"openid",
+	"profile",
+	"email",
+}
