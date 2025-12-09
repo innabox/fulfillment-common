@@ -33,10 +33,11 @@ import (
 // OpenID Connect Discovery 1.0 specification. Note that this only contains the fields that we need, which happen to be
 // available in both specifications.
 type ServerMetadata struct {
-	AuthorizationEndpoint       string `json:"authorization_endpoint,omitempty"`
-	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
-	Issuer                      string `json:"issuer,omitempty"`
-	TokenEndpoint               string `json:"token_endpoint,omitempty"`
+	AuthorizationEndpoint       string   `json:"authorization_endpoint,omitempty"`
+	DeviceAuthorizationEndpoint string   `json:"device_authorization_endpoint,omitempty"`
+	Issuer                      string   `json:"issuer,omitempty"`
+	ScopesSupported             []string `json:"scopes_supported,omitempty"`
+	TokenEndpoint               string   `json:"token_endpoint,omitempty"`
 }
 
 // DiscoveryToolBuilder contains the logic needed to create an OAuth discovery tool.
@@ -250,6 +251,7 @@ func (t *DiscoveryTool) discover(ctx context.Context, endpoint string) (result *
 		slog.String("token_endpoint", serverMetadata.TokenEndpoint),
 		slog.String("authorization_endpoint", serverMetadata.AuthorizationEndpoint),
 		slog.String("device_authorization_endpoint", serverMetadata.DeviceAuthorizationEndpoint),
+		slog.Any("scopes_supported", serverMetadata.ScopesSupported),
 	)
 	result = &serverMetadata
 	return
