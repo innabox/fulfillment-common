@@ -79,12 +79,13 @@ var _ = Describe("OAuth discovery tool", func() {
 			)
 		}
 
-		makeMetadata := func(issuer, tokenEndpoint, authEndpoint, deviceEndpoint string) string {
+		makeMetadata := func(issuer, tokenEndpoint, authEndpoint, deviceEndpoint string, scopes []string) string {
 			doc := map[string]any{
 				"issuer":                        issuer,
 				"token_endpoint":                tokenEndpoint,
 				"authorization_endpoint":        authEndpoint,
 				"device_authorization_endpoint": deviceEndpoint,
+				"scopes_supported":              scopes,
 			}
 			data, err := json.Marshal(doc)
 			Expect(err).ToNot(HaveOccurred())
@@ -98,6 +99,7 @@ var _ = Describe("OAuth discovery tool", func() {
 					"https://example.com/auth/token",
 					"https://example.com/auth/authorize",
 					"https://example.com/auth/device",
+					[]string{"openid", "profile", "email"},
 				),
 				http.StatusOK,
 			)
@@ -118,6 +120,7 @@ var _ = Describe("OAuth discovery tool", func() {
 			Expect(serverMetadata.TokenEndpoint).To(Equal("https://example.com/auth/token"))
 			Expect(serverMetadata.AuthorizationEndpoint).To(Equal("https://example.com/auth/authorize"))
 			Expect(serverMetadata.DeviceAuthorizationEndpoint).To(Equal("https://example.com/auth/device"))
+			Expect(serverMetadata.ScopesSupported).To(Equal([]string{"openid", "profile", "email"}))
 		})
 
 		It("Falls back to OIDC endpoint when OAuth endpoint returns 404", func() {
@@ -139,6 +142,7 @@ var _ = Describe("OAuth discovery tool", func() {
 						"https://example.com/auth/token",
 						"https://example.com/auth/authorize",
 						"https://example.com/auth/device",
+						[]string{"openid", "offline_access"},
 					),
 					http.Header{
 						"Content-Type": {
@@ -162,6 +166,7 @@ var _ = Describe("OAuth discovery tool", func() {
 			Expect(metadata.TokenEndpoint).To(Equal("https://example.com/auth/token"))
 			Expect(metadata.AuthorizationEndpoint).To(Equal("https://example.com/auth/authorize"))
 			Expect(metadata.DeviceAuthorizationEndpoint).To(Equal("https://example.com/auth/device"))
+			Expect(metadata.ScopesSupported).To(Equal([]string{"openid", "offline_access"}))
 		})
 
 		It("Returns error when both discovery endpoints fail", func() {
