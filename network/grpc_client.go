@@ -44,6 +44,7 @@ type GrpcClientBuilder struct {
 	caPool             *x509.CertPool
 	tokenSource        auth.TokenSource
 	keepAlive          time.Duration
+	userAgent          string
 	unaryInterceptors  []grpc.UnaryClientInterceptor
 	streamInterceptors []grpc.StreamClientInterceptor
 }
@@ -177,7 +178,13 @@ func (b *GrpcClientBuilder) SetTokenSource(value auth.TokenSource) *GrpcClientBu
 func (b *GrpcClientBuilder) SetKeepAlive(value time.Duration) *GrpcClientBuilder {
 	b.keepAlive = value
 	return b
+}
 
+// SetUserAgent sets the 'User-Agent' header that will be sent with every request. This is optional, by default the
+// gRPC library will use its own user agent string.
+func (b *GrpcClientBuilder) SetUserAgent(value string) *GrpcClientBuilder {
+	b.userAgent = value
+	return b
 }
 
 // AddUnaryInterceptor adds a unary interceptor to the client.
@@ -303,7 +310,12 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 		}))
 	}
 
-	// Start with th einterceptors configured by the user:
+	// Set the user agent option:
+	if b.userAgent != "" {
+		options = append(options, grpc.WithUserAgent(b.userAgent))
+	}
+
+	// Start with the interceptors configured by the user:
 	unaryInterceptors := b.unaryInterceptors
 	streamInterceptors := b.streamInterceptors
 
