@@ -177,5 +177,58 @@ func LocalhostCertificate() tls.Certificate {
 	return *localhostCertificate
 }
 
+// LocalhostCertificateFiles returns the paths to three temporary files containing the certificate, private key and
+// CA certificate returned by LocalhostCertificate. All files are PEM encoded. Since the certificate is self-signed,
+// the CA file contains the same certificate. It is the responsibility of the caller to delete these files when they
+// are no longer needed.
+func LocalhostCertificateFiles() (certFile, keyFile, caFile string) {
+	cert := LocalhostCertificate()
+
+	// Encode the certificate to PEM format:
+	certBlock := &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Certificate[0],
+	}
+	certData := pem.EncodeToMemory(certBlock)
+	Expect(certData).ToNot(BeNil())
+
+	// Write the certificate to a temporary file:
+	certTmp, err := os.CreateTemp("", "*.test.crt")
+	Expect(err).ToNot(HaveOccurred())
+	_, err = certTmp.Write(certData)
+	Expect(err).ToNot(HaveOccurred())
+	err = certTmp.Close()
+	Expect(err).ToNot(HaveOccurred())
+	certFile = certTmp.Name()
+
+	// Encode the private key to PEM format and write it to a temporary file:
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	Expect(err).ToNot(HaveOccurred())
+	keyBlock := &pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: keyBytes,
+	}
+	keyData := pem.EncodeToMemory(keyBlock)
+	Expect(keyData).ToNot(BeNil())
+	keyTmp, err := os.CreateTemp("", "*.test.key")
+	Expect(err).ToNot(HaveOccurred())
+	_, err = keyTmp.Write(keyData)
+	Expect(err).ToNot(HaveOccurred())
+	err = keyTmp.Close()
+	Expect(err).ToNot(HaveOccurred())
+	keyFile = keyTmp.Name()
+
+	// Write the CA certificate to a temporary file (same as the certificate since it is self-signed):
+	caTmp, err := os.CreateTemp("", "*.test.ca")
+	Expect(err).ToNot(HaveOccurred())
+	_, err = caTmp.Write(certData)
+	Expect(err).ToNot(HaveOccurred())
+	err = caTmp.Close()
+	Expect(err).ToNot(HaveOccurred())
+	caFile = caTmp.Name()
+
+	return
+}
+
 // localhostCertificate contains the TLS certificate returned by the LocalhostCertificate function.
 var localhostCertificate *tls.Certificate
