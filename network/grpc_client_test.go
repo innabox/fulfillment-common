@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/innabox/fulfillment-common/testing"
 )
@@ -213,5 +214,62 @@ var _ = Describe("gRPC client", func() {
 		Expect(response).ToNot(BeNil())
 		Expect(response.Status).To(Equal(healthpb.HealthCheckResponse_SERVING))
 		Expect(called).To(BeTrue())
+	})
+
+	It("Sends the configured user agent", func() {
+		// Create a test gRPC server with a random port:
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).ToNot(HaveOccurred())
+
+		// Create a server interceptor to capture the user agent:
+		var agent string
+		serverInterceptor := func(ctx context.Context, request any, info *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler) (any, error) {
+			md, ok := metadata.FromIncomingContext(ctx)
+			if ok {
+				agents := md.Get("user-agent")
+				if len(agents) > 0 {
+					agent = agents[0]
+				}
+			}
+			return handler(ctx, request)
+		}
+
+		// Create and start the gRPC server with health service:
+		server := grpc.NewServer(grpc.UnaryInterceptor(serverInterceptor))
+		healthServer := health.NewServer()
+		healthpb.RegisterHealthServer(server, healthServer)
+		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		go func() {
+			defer GinkgoRecover()
+			_ = server.Serve(listener)
+		}()
+		defer server.Stop()
+
+		// Create the client with a custom user agent:
+		client, err := NewGrpcClient().
+			SetLogger(logger).
+			SetAddress(listener.Addr().String()).
+			SetPlaintext(true).
+			SetUserAgent("my-agent/1.0").
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(client).ToNot(BeNil())
+		defer func() {
+			err := client.Close()
+			Expect(err).ToNot(HaveOccurred())
+		}()
+
+		// Make a request to trigger the interceptor:
+		healthClient := healthpb.NewHealthClient(client)
+		response, err := healthClient.Check(ctx, &healthpb.HealthCheckRequest{
+			Service: "",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(response).ToNot(BeNil())
+		Expect(response.Status).To(Equal(healthpb.HealthCheckResponse_SERVING))
+
+		// Verify the user agent was captured and contains our custom value:
+		Expect(agent).To(ContainSubstring("my-agent/1.0"))
 	})
 })
