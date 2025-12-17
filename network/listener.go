@@ -216,12 +216,14 @@ func (b *ListenerBuilder) Build() (result net.Listener, err error) {
 
 // Common listener names:
 const (
-	GrpcListenerName = "gRPC"
-	HttpListenerName = "HTTP"
+	GrpcListenerName    = "gRPC"
+	HttpListenerName    = "HTTP"
+	MetricsListenerName = "Metrics"
 )
 
 // Default listener addresses:
 const (
-	DefaultGrpcAddress = "localhost:8000"
-	DefaultHttpAddress = "localhost:8001"
+	DefaultGrpcAddress    = "localhost:8000"
+	DefaultHttpAddress    = "localhost:8001"
+	DefaultMetricsAddress = "localhost:8002"
 )
