@@ -18,12 +18,14 @@ package metrics
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/status"
+	grpccodes "google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // GrpcInterceptorBuilder contains the data and logic needed to build a new metrics interceptor that creates
@@ -257,7 +259,7 @@ func (i *GrpcInterceptor) UnaryServer(ctx context.Context, request any, info *gr
 	response, err = handler(ctx, request)
 	elapsed := time.Since(start)
 	service, method := splitMethod(info.FullMethod)
-	code := status.Code(err)
+	code := grpcstatus.Code(err)
 	labels := prometheus.Labels{
 		serviceLabelName: service,
 		methodLabelName:  method,
@@ -276,7 +278,7 @@ func (i *GrpcInterceptor) StreamServer(server any, stream grpc.ServerStream, inf
 	err := handler(server, wrapped)
 	elapsed := time.Since(start)
 	service, method := splitMethod(info.FullMethod)
-	code := status.Code(err)
+	code := grpcstatus.Code(err)
 	labels := prometheus.Labels{
 		serviceLabelName: service,
 		methodLabelName:  method,
@@ -287,6 +289,51 @@ func (i *GrpcInterceptor) StreamServer(server any, stream grpc.ServerStream, inf
 	i.streamMessagesSent.With(labels).Add(float64(wrapped.sentCount))
 	i.streamMessagesReceived.With(labels).Add(float64(wrapped.receivedCount))
 	return err
+}
+
+// UnaryClient is the unary client interceptor function that records metrics.
+func (i *GrpcInterceptor) UnaryClient(ctx context.Context, method string, req, reply any,
+	cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	start := time.Now()
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	elapsed := time.Since(start)
+	service, methodName := splitMethod(method)
+	code := grpcstatus.Code(err)
+	labels := prometheus.Labels{
+		serviceLabelName: service,
+		methodLabelName:  methodName,
+		codeLabelName:    code.String(),
+	}
+	i.requestCount.With(labels).Inc()
+	i.requestDuration.With(labels).Observe(elapsed.Seconds())
+	return err
+}
+
+// StreamClient is the stream client interceptor function that records metrics.
+func (i *GrpcInterceptor) StreamClient(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
+	method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+	start := time.Now()
+	stream, err := streamer(ctx, desc, cc, method, opts...)
+	if err != nil {
+		elapsed := time.Since(start)
+		service, methodName := splitMethod(method)
+		code := grpcstatus.Code(err)
+		labels := prometheus.Labels{
+			serviceLabelName: service,
+			methodLabelName:  methodName,
+			codeLabelName:    code.String(),
+		}
+		i.streamCount.With(labels).Inc()
+		i.streamDuration.With(labels).Observe(elapsed.Seconds())
+		return nil, err
+	}
+	wrapped := &wrappedClientStream{
+		ClientStream: stream,
+		interceptor:  i,
+		method:       method,
+		start:        start,
+	}
+	return wrapped, nil
 }
 
 // splitMethod splits a gRPC full method name into service and method names.
@@ -324,6 +371,70 @@ func (w *wrappedServerStream) RecvMsg(m any) error {
 		w.receivedCount++
 	}
 	return err
+}
+
+// wrappedClientStream wraps a grpc.ClientStream to count sent and received messages and record metrics when the stream
+// closes.
+type wrappedClientStream struct {
+	grpc.ClientStream
+	interceptor   *GrpcInterceptor
+	method        string
+	start         time.Time
+	sentCount     int
+	receivedCount int
+	finalized     bool
+}
+
+// SendMsg wraps the underlying SendMsg and counts sent messages.
+func (w *wrappedClientStream) SendMsg(m any) error {
+	err := w.ClientStream.SendMsg(m)
+	if err == nil {
+		w.sentCount++
+	}
+	return err
+}
+
+// RecvMsg wraps the underlying RecvMsg and counts received messages. When the stream ends (io.EOF or error), it
+// records the metrics.
+func (w *wrappedClientStream) RecvMsg(m any) error {
+	err := w.ClientStream.RecvMsg(m)
+	if err == nil {
+		w.receivedCount++
+	} else {
+		w.finalize(err)
+	}
+	return err
+}
+
+// CloseSend wraps the underlying CloseSend.
+func (w *wrappedClientStream) CloseSend() error {
+	return w.ClientStream.CloseSend()
+}
+
+// finalize records the stream metrics when the stream ends. It ensures metrics are recorded only once.
+func (w *wrappedClientStream) finalize(err error) {
+	if w.finalized {
+		return
+	}
+	w.finalized = true
+	elapsed := time.Since(w.start)
+	service, method := splitMethod(w.method)
+	// io.EOF indicates normal stream completion, so we treat it as OK:
+	var code grpccodes.Code
+	if errors.Is(err, io.EOF) {
+		code = grpccodes.OK
+	} else {
+		code = grpcstatus.Code(err)
+	}
+	labels := prometheus.Labels{
+		serviceLabelName: service,
+		methodLabelName:  method,
+		codeLabelName:    code.String(),
+	}
+	w.interceptor.streamCount.With(labels).Inc()
+	w.interceptor.streamDuration.With(labels).Observe(elapsed.Seconds())
+	w.interceptor.streamMessagesSent.With(labels).Add(float64(w.sentCount))
+	w.interceptor.streamMessagesReceived.With(labels).Add(float64(w.receivedCount))
 }
 
 // Label names for the metrics:
