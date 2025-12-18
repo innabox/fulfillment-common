@@ -15,6 +15,7 @@ package metrics
 
 import (
 	"context"
+	"io"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -496,6 +497,252 @@ var _ = Describe("Metrics", func() {
 			Expect(metrics).To(MatchLine(`^\w+_stream_duration_count\{.*code="OK".*\} 1$`))
 		})
 	})
+
+	// callUnaryClient simulates a unary client call with the given method and returns an error if the invoker
+	// returns one.
+	callUnaryClient := func(method string, invokerErr error) error {
+		invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn,
+			opts ...grpc.CallOption) error {
+			return invokerErr
+		}
+		return interceptor.UnaryClient(ctx, method, "request", "reply", nil, invoker)
+	}
+
+	// callStreamClient simulates a stream client call with the given method and returns the wrapped stream.
+	callStreamClient := func(method string, mockStream *mockClientStream) (grpc.ClientStream, error) {
+		desc := &grpc.StreamDesc{StreamName: "TestStream"}
+		streamer := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string,
+			opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			if mockStream == nil {
+				return nil, grpcstatus.Error(grpccodes.Unavailable, "connection failed")
+			}
+			return mockStream, nil
+		}
+		return interceptor.StreamClient(ctx, desc, nil, method, streamer)
+	}
+
+	Describe("Unary client request count", func() {
+		It("Honours subsystem", func() {
+			// Send a request:
+			err := callUnaryClient("/package.Service/Method", nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify the metrics:
+			metrics := server.Metrics()
+			Expect(metrics).To(MatchLine(`^my_unary_request_count\{.*\} .*$`))
+		})
+
+		DescribeTable(
+			"Counts correctly",
+			func(count int) {
+				// Send multiple requests:
+				for i := 0; i < count; i++ {
+					err := callUnaryClient("/package.Service/Method", nil)
+					Expect(err).ToNot(HaveOccurred())
+				}
+
+				// Verify the metrics:
+				metrics := server.Metrics()
+				Expect(metrics).To(MatchLine(`^\w+_unary_request_count\{.*\} %d$`, count))
+			},
+			Entry(
+				"One",
+				1,
+			),
+			Entry(
+				"Two",
+				2,
+			),
+			Entry(
+				"Three",
+				3,
+			),
+		)
+
+		DescribeTable(
+			"Includes service label",
+			func(fullMethod, expectedService string) {
+				// Send a request:
+				err := callUnaryClient(fullMethod, nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Verify the metrics:
+				metrics := server.Metrics()
+				Expect(metrics).To(MatchLine(`^\w+_unary_request_count\{.*service="%s".*\} .*$`, expectedService))
+			},
+			Entry(
+				"Simple service",
+				"/mypackage.MyService/MyMethod",
+				"mypackage.MyService",
+			),
+			Entry(
+				"Versioned service",
+				"/fulfillment.v1.Clusters/Create",
+				"fulfillment.v1.Clusters",
+			),
+		)
+
+		DescribeTable(
+			"Includes method label",
+			func(fullMethod, expectedMethod string) {
+				// Send a request:
+				err := callUnaryClient(fullMethod, nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Verify the metrics:
+				metrics := server.Metrics()
+				Expect(metrics).To(MatchLine(`^\w+_unary_request_count\{.*method="%s".*\} .*$`, expectedMethod))
+			},
+			Entry(
+				"Create",
+				"/fulfillment.v1.Clusters/Create",
+				"Create",
+			),
+			Entry(
+				"Get",
+				"/fulfillment.v1.Clusters/Get",
+				"Get",
+			),
+		)
+
+		DescribeTable(
+			"Includes code label",
+			func(code grpccodes.Code) {
+				// Send a request with the given error code:
+				var invokerErr error
+				if code != grpccodes.OK {
+					invokerErr = grpcstatus.Error(code, "error")
+				}
+				_ = callUnaryClient("/package.Service/Method", invokerErr)
+
+				// Verify the metrics:
+				metrics := server.Metrics()
+				Expect(metrics).To(MatchLine(`^\w+_unary_request_count\{.*code="%s".*\} .*$`, code.String()))
+			},
+			Entry(
+				"OK",
+				grpccodes.OK,
+			),
+			Entry(
+				"NotFound",
+				grpccodes.NotFound,
+			),
+			Entry(
+				"Internal",
+				grpccodes.Internal,
+			),
+		)
+	})
+
+	Describe("Stream client count", func() {
+		It("Records metrics when stream creation fails", func() {
+			// Try to create a stream that fails:
+			stream, err := callStreamClient("/fulfillment.v1.Events/Watch", nil)
+			Expect(err).To(HaveOccurred())
+			Expect(stream).To(BeNil())
+
+			// Verify the metrics:
+			metrics := server.Metrics()
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*service="fulfillment.v1.Events".*\} 1$`))
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*method="Watch".*\} 1$`))
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*code="Unavailable".*\} 1$`))
+		})
+
+		It("Records metrics when stream completes with EOF", func() {
+			// Create a mock stream that returns EOF after some messages:
+			mockStream := &mockClientStream{ctx: ctx, maxRecv: 2, recvErr: io.EOF}
+
+			// Create the stream:
+			stream, err := callStreamClient("/fulfillment.v1.Events/Watch", mockStream)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stream).ToNot(BeNil())
+
+			// Receive messages until EOF:
+			for {
+				err = stream.RecvMsg(nil)
+				if err != nil {
+					break
+				}
+			}
+			Expect(err).To(Equal(io.EOF))
+
+			// Verify the metrics - EOF should be recorded as OK:
+			metrics := server.Metrics()
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*service="fulfillment.v1.Events".*\} 1$`))
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*method="Watch".*\} 1$`))
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*code="OK".*\} 1$`))
+		})
+
+		It("Records metrics when stream completes with error", func() {
+			// Create a mock stream that returns an error after some messages:
+			mockStream := &mockClientStream{ctx: ctx, maxRecv: 1, recvErr: grpcstatus.Error(grpccodes.Internal, "error")}
+
+			// Create the stream:
+			stream, err := callStreamClient("/fulfillment.v1.Events/Watch", mockStream)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stream).ToNot(BeNil())
+
+			// Receive messages until error:
+			for {
+				err = stream.RecvMsg(nil)
+				if err != nil {
+					break
+				}
+			}
+			Expect(err).To(HaveOccurred())
+
+			// Verify the metrics:
+			metrics := server.Metrics()
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*service="fulfillment.v1.Events".*\} 1$`))
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*code="Internal".*\} 1$`))
+		})
+
+		It("Counts sent and received messages", func() {
+			// Create a mock stream:
+			mockStream := &mockClientStream{ctx: ctx, maxRecv: 3, recvErr: io.EOF}
+
+			// Create the stream:
+			stream, err := callStreamClient("/fulfillment.v1.Events/Watch", mockStream)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Send some messages:
+			for i := 0; i < 2; i++ {
+				err = stream.SendMsg(nil)
+				Expect(err).ToNot(HaveOccurred())
+			}
+
+			// Receive messages until EOF:
+			for {
+				err = stream.RecvMsg(nil)
+				if err != nil {
+					break
+				}
+			}
+
+			// Verify the metrics:
+			metrics := server.Metrics()
+			Expect(metrics).To(MatchLine(`^\w+_stream_messages_sent\{.*\} 2$`))
+			Expect(metrics).To(MatchLine(`^\w+_stream_messages_received\{.*\} 3$`))
+		})
+
+		It("Records metrics only once on multiple errors", func() {
+			// Create a mock stream that returns error:
+			mockStream := &mockClientStream{ctx: ctx, maxRecv: 0, recvErr: io.EOF}
+
+			// Create the stream:
+			stream, err := callStreamClient("/fulfillment.v1.Events/Watch", mockStream)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Call RecvMsg multiple times after EOF:
+			_ = stream.RecvMsg(nil)
+			_ = stream.RecvMsg(nil)
+			_ = stream.RecvMsg(nil)
+
+			// Verify the metrics - should be counted only once:
+			metrics := server.Metrics()
+			Expect(metrics).To(MatchLine(`^\w+_stream_count\{.*code="OK".*\} 1$`))
+		})
+	})
 })
 
 // mockServerStream is a minimal implementation of grpc.ServerStream for testing.
@@ -524,4 +771,44 @@ func (m *mockServerStream) SendHeader(metadata.MD) error {
 }
 
 func (m *mockServerStream) SetTrailer(metadata.MD) {
+}
+
+// mockClientStream is a minimal implementation of grpc.ClientStream for testing.
+type mockClientStream struct {
+	ctx           context.Context
+	recvCount     int
+	maxRecv       int
+	recvErr       error
+	sentCount     int
+	receivedCount int
+}
+
+func (m *mockClientStream) Context() context.Context {
+	return m.ctx
+}
+
+func (m *mockClientStream) Header() (metadata.MD, error) {
+	return nil, nil
+}
+
+func (m *mockClientStream) Trailer() metadata.MD {
+	return nil
+}
+
+func (m *mockClientStream) CloseSend() error {
+	return nil
+}
+
+func (m *mockClientStream) SendMsg(msg any) error {
+	m.sentCount++
+	return nil
+}
+
+func (m *mockClientStream) RecvMsg(msg any) error {
+	if m.recvErr != nil && m.recvCount >= m.maxRecv {
+		return m.recvErr
+	}
+	m.recvCount++
+	m.receivedCount++
+	return nil
 }

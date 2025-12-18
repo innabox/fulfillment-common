@@ -24,6 +24,8 @@ import (
 
 	"github.com/innabox/fulfillment-common/auth"
 	"github.com/innabox/fulfillment-common/logging"
+	"github.com/innabox/fulfillment-common/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -48,6 +50,8 @@ type GrpcClientBuilder struct {
 	userAgent          string
 	unaryInterceptors  []grpc.UnaryClientInterceptor
 	streamInterceptors []grpc.StreamClientInterceptor
+	metricsSubsystem   string
+	metricsRegisterer  prometheus.Registerer
 }
 
 // NewGrpcClient creates a builder that can then used to configure and create a gRPC client.
@@ -219,6 +223,20 @@ func (b *GrpcClientBuilder) AddStreamInterceptors(interceptors ...grpc.StreamCli
 	return b
 }
 
+// SetMetricsSubsystem sets the subsystem that will be used for metrics. This is optional, if not specified then no
+// metrics will be collected.
+func (b *GrpcClientBuilder) SetMetricsSubsystem(value string) *GrpcClientBuilder {
+	b.metricsSubsystem = value
+	return b
+}
+
+// SetMetricsRegiserer sets the metrics registry that will be used for metrics. This is optional, if not specified then
+// the default metrics registry will be used.
+func (b *GrpcClientBuilder) SetMetricsRegisterer(value prometheus.Registerer) *GrpcClientBuilder {
+	b.metricsRegisterer = value
+	return b
+}
+
 // Build uses the data stored in the builder to create a new network client.
 func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 	// Check parameters:
@@ -347,11 +365,26 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 	unaryInterceptors = append(unaryInterceptors, loggingInterceptor.UnaryClient)
 	streamInterceptors = append(streamInterceptors, loggingInterceptor.StreamClient)
 
+	// Add the metrics interceptor:
+	if b.metricsSubsystem != "" {
+		var metricsInterceptor *metrics.GrpcInterceptor
+		metricsInterceptor, err = metrics.NewGrpcInterceptor().
+			SetSubsystem(b.metricsSubsystem).
+			SetRegisterer(b.metricsRegisterer).
+			Build()
+		if err != nil {
+			err = fmt.Errorf("failed to create metrics interceptor: %w", err)
+			return
+		}
+		unaryInterceptors = append(unaryInterceptors, metricsInterceptor.UnaryClient)
+		streamInterceptors = append(streamInterceptors, metricsInterceptor.StreamClient)
+	}
+
 	// Set the interceptor options:
-	if len(b.unaryInterceptors) > 0 {
+	if len(unaryInterceptors) > 0 {
 		options = append(options, grpc.WithChainUnaryInterceptor(unaryInterceptors...))
 	}
-	if len(b.streamInterceptors) > 0 {
+	if len(streamInterceptors) > 0 {
 		options = append(options, grpc.WithChainStreamInterceptor(streamInterceptors...))
 	}
 
@@ -363,5 +396,4 @@ func (b *GrpcClientBuilder) Build() (result *grpc.ClientConn, err error) {
 // Common client names:
 const (
 	GrpcClientName = "gRPC"
-	HttpClientName = "HTTP"
 )
