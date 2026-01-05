@@ -124,8 +124,8 @@ func (b *InterceptorBuilder) Build() (result *Interceptor, err error) {
 // UnaryServer is the unary server interceptor function.
 func (i *Interceptor) UnaryServer(ctx context.Context, request any, info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler) (response any, err error) {
-	// Ignore reflection calls:
-	if i.isReflectionMethod(info.FullMethod) {
+	// Ignore reflection and health check calls:
+	if i.isIgnoredMethod(info.FullMethod) {
 		response, err = handler(ctx, request)
 		return
 	}
@@ -200,8 +200,8 @@ func (i *Interceptor) UnaryServer(ctx context.Context, request any, info *grpc.U
 // StreamServer is the stream server interceptor function.
 func (i *Interceptor) StreamServer(server any, stream grpc.ServerStream, info *grpc.StreamServerInfo,
 	handler grpc.StreamHandler) error {
-	// Ignore reflection calls:
-	if i.isReflectionMethod(info.FullMethod) {
+	// Ignore reflection and health check calls:
+	if i.isIgnoredMethod(info.FullMethod) {
 		return handler(server, stream)
 	}
 
@@ -266,8 +266,8 @@ func (i *Interceptor) StreamServer(server any, stream grpc.ServerStream, info *g
 // UnaryClient is the unary client interceptor function.
 func (i *Interceptor) UnaryClient(ctx context.Context, method string, request, response any,
 	conn *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-	// Ignore reflection calls:
-	if i.isReflectionMethod(method) {
+	// Ignore reflection and health check calls:
+	if i.isIgnoredMethod(method) {
 		return invoker(ctx, method, request, response, conn, opts...)
 	}
 
@@ -335,8 +335,8 @@ func (i *Interceptor) UnaryClient(ctx context.Context, method string, request, r
 // StreamClient is the stream client interceptor function.
 func (i *Interceptor) StreamClient(ctx context.Context, desc *grpc.StreamDesc, conn *grpc.ClientConn, method string,
 	streamer grpc.Streamer, opts ...grpc.CallOption) (stream grpc.ClientStream, err error) {
-	// Ignore reflection calls:
-	if i.isReflectionMethod(method) {
+	// Ignore reflection and health check calls:
+	if i.isIgnoredMethod(method) {
 		return streamer(ctx, desc, conn, method, opts...)
 	}
 
@@ -358,8 +358,8 @@ func (i *Interceptor) StreamClient(ctx context.Context, desc *grpc.StreamDesc, c
 	return
 }
 
-func (i *Interceptor) isReflectionMethod(method string) bool {
-	return strings.HasPrefix(method, "/grpc.reflection.")
+func (i *Interceptor) isIgnoredMethod(method string) bool {
+	return strings.HasPrefix(method, "/grpc.reflection.") || strings.HasPrefix(method, "/grpc.health.")
 }
 
 // redactMetadata generates a copy of the given metadata that doesn't contain security sensitive data, like
