@@ -184,6 +184,23 @@ var _ = Describe("Interceptor", func() {
 			Expect(messages).To(BeEmpty())
 		})
 
+		It("Skips logging for health check methods", func() {
+			method := "/grpc.health.v1.Health/Check"
+
+			// Mock invoker:
+			invoker := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+				return nil
+			}
+
+			// Call the interceptor:
+			err := interceptor.UnaryClient(ctx, method, nil, nil, conn, invoker)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Parse the log messages - should be empty:
+			messages := Parse(buffer)
+			Expect(messages).To(BeEmpty())
+		})
+
 		It("Skips logging when debug is disabled", func() {
 			// Create a logger with info level:
 			infoLogger, err := NewLogger().
@@ -259,6 +276,29 @@ var _ = Describe("Interceptor", func() {
 
 		It("Skips logging for reflection methods", func() {
 			method := "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"
+			desc := &grpc.StreamDesc{}
+
+			// Mock stream:
+			mockStream := &mockClientStream{ctx: ctx}
+
+			// Mock streamer:
+			streamer := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string,
+				opts ...grpc.CallOption) (grpc.ClientStream, error) {
+				return mockStream, nil
+			}
+
+			// Call the interceptor:
+			stream, err := interceptor.StreamClient(ctx, desc, conn, method, streamer)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stream).To(Equal(mockStream)) // Should return original stream
+
+			// Parse the log messages - should be empty:
+			messages := Parse(buffer)
+			Expect(messages).To(BeEmpty())
+		})
+
+		It("Skips logging for health check methods", func() {
+			method := "/grpc.health.v1.Health/Watch"
 			desc := &grpc.StreamDesc{}
 
 			// Mock stream:
