@@ -807,7 +807,7 @@ var _ = Describe("Token source", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// Verify that all default scopes were requested:
-		Expect(requestedScopes).To(Equal("email openid profile"))
+		Expect(requestedScopes).To(Equal("openid"))
 	})
 
 	It("Uses only the scopes supported by the server from defaults", func() {
