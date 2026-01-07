@@ -50,10 +50,12 @@ const (
 	CredentialsFlow Flow = "credentials"
 	CodeFlow        Flow = "code"
 	DeviceFlow      Flow = "device"
+	PasswordFlow    Flow = "password"
 )
 
 // TokenSourceBuilder contains the logic needed to create a token source that uses OAuth client credentials grant,
-// authorization code flow, or device flow to obtain and automatically renew access tokens.
+// authorization code flow, device flow, or resource owner password credentials flow to obtain and automatically renew
+// access tokens.
 type TokenSourceBuilder struct {
 	logger       *slog.Logger
 	store        auth.TokenStore
@@ -62,6 +64,8 @@ type TokenSourceBuilder struct {
 	issuer       string
 	clientId     string
 	clientSecret string
+	username     string
+	password     string
 	scopes       []string
 	insecure     bool
 	caPool       *x509.CertPool
@@ -81,6 +85,8 @@ type TokenSource struct {
 	issuer           string
 	clientId         string
 	clientSecret     string
+	username         string
+	password         string
 	scopes           []string
 	insecure         bool
 	caPool           *x509.CertPool
@@ -110,9 +116,11 @@ type tokenEndpointRequest struct {
 	CodeVerifier string   `json:"code_verifier,omitempty" url:"code_verifier,omitempty"`
 	DeviceCode   string   `json:"device_code,omitempty" url:"device_code,omitempty"`
 	GrantType    string   `json:"grant_type,omitempty" url:"grant_type,omitempty"`
+	Password     string   `json:"password,omitempty" url:"password,omitempty"`
 	RedirectUri  string   `json:"redirect_uri,omitempty" url:"redirect_uri,omitempty"`
 	RefreshToken string   `json:"refresh_token,omitempty" url:"refresh_token,omitempty"`
 	Scope        []string `json:"scope,omitempty" url:"scope,omitempty,space"`
+	Username     string   `json:"username,omitempty" url:"username,omitempty"`
 }
 
 type tokenEndpointResponse struct {
@@ -174,6 +182,20 @@ func (b *TokenSourceBuilder) SetClientId(value string) *TokenSourceBuilder {
 // SetClientSecret sets the client secret. This is mandatory for client credentials flow and optional for other flows.
 func (b *TokenSourceBuilder) SetClientSecret(value string) *TokenSourceBuilder {
 	b.clientSecret = value
+	return b
+}
+
+// SetUsername sets the username for the resource owner password credentials flow. This is mandatory for the password
+// flow.
+func (b *TokenSourceBuilder) SetUsername(value string) *TokenSourceBuilder {
+	b.username = value
+	return b
+}
+
+// SetPassword sets the password for the resource owner password credentials flow. This is mandatory for the password
+// flow.
+func (b *TokenSourceBuilder) SetPassword(value string) *TokenSourceBuilder {
+	b.password = value
 	return b
 }
 
@@ -289,10 +311,19 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 			err = errors.New("listener is mandatory for the device flow")
 			return
 		}
+	case PasswordFlow:
+		if b.username == "" {
+			err = errors.New("username is mandatory for the resource owner password credentials flow")
+			return
+		}
+		if b.password == "" {
+			err = errors.New("password is mandatory for the resource owner password credentials flow")
+			return
+		}
 	default:
 		err = fmt.Errorf(
-			"unsupported flow '%s', should be '%s', '%s' or '%s'",
-			b.flow, CredentialsFlow, CodeFlow, DeviceFlow,
+			"unsupported flow '%s', should be '%s', '%s', '%s' or '%s'",
+			b.flow, CredentialsFlow, CodeFlow, DeviceFlow, PasswordFlow,
 		)
 		return
 	}
@@ -386,6 +417,8 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 		issuer:           b.issuer,
 		clientId:         b.clientId,
 		clientSecret:     b.clientSecret,
+		username:         b.username,
+		password:         b.password,
 		scopes:           scopes,
 		insecure:         b.insecure,
 		caPool:           caPool,
@@ -416,6 +449,11 @@ func (b *TokenSourceBuilder) Build() (result *TokenSource, err error) {
 			source:   source,
 			logger:   b.logger.With("flow", "device"),
 			listener: b.listener,
+		}
+	case PasswordFlow:
+		source.flowRunner = &passwordFlow{
+			source: source,
+			logger: b.logger.With("flow", "password"),
 		}
 	}
 
@@ -481,7 +519,7 @@ func (s *TokenSource) Token(ctx context.Context) (result *auth.Token, err error)
 	// interactive mode is enabled, or if the flow isn't interactive.
 	flowInteractive := true
 	switch s.flowRunner.(type) {
-	case *credentialsFlow:
+	case *credentialsFlow, *passwordFlow:
 		flowInteractive = false
 	}
 	if !flowInteractive || s.interactive {

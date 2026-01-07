@@ -1166,8 +1166,8 @@ const internalIngressPort = 30000
 
 // Versions of components:
 const (
-	certManagerVersion  = "v1.19.1"
-	trustManagerVersion = "v0.20.0"
+	certManagerVersion  = "v1.19.2"
+	trustManagerVersion = "v0.20.3"
 	authorinoVersion    = "v0.22.0"
 	envoyGatewayVersion = "v1.6.1"
 )
