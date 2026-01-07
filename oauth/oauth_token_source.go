@@ -843,6 +843,4 @@ const defaultRedirectUri = "http://localhost:0"
 // doesn't explicitly set scopes.
 var defaultScopes = []string{
 	"openid",
-	"profile",
-	"email",
 }
