@@ -18,3 +18,12 @@ repos:
       files: \.(yaml|yml)$
       types: [file, yaml]
       entry: yamllint --strict
+
+- repo: local
+  hooks:
+    - id: buf-generate-check
+      name: Check buf generated code is up to date
+      entry: scripts/check-buf-generate.sh
+      language: script
+      pass_filenames: false
+      files: ^buf\.gen\.yaml$
